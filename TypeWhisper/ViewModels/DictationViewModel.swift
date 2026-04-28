@@ -721,7 +721,12 @@ final class DictationViewModel: ObservableObject {
         case .recording:
             guard !isStopInFlight else { return }
             abortActiveRecordingImmediately(sessionMessage: cancelledMessage)
-            showNotchFeedback(message: indicatorStyle != .minimal ? cancelledMessage : nil, icon: "xmark", duration: 1.5)
+            let cancelFeedbackDuration: TimeInterval = isMinimalCompactModeEnabled ? 0 : 1.5
+            showNotchFeedback(
+                message: isMinimalCompactModeEnabled ? nil : cancelledMessage,
+                icon: "xmark.circle",
+                duration: cancelFeedbackDuration
+            )
         case .processing:
             if aiPostProcessingActive, let rawText = rawTranscriptForFallback {
                 logger.info("[ESC] AI post-processing active — cancelling AI task and inserting raw fallback transcript (\(rawText.count, privacy: .public) chars)")
@@ -735,7 +740,12 @@ final class DictationViewModel: ObservableObject {
                 cancelActiveDictationSessionIfNeeded(message: cancelledMessage)
                 transcriptionTask?.cancel()
                 transcriptionTask = nil
-                showNotchFeedback(message: indicatorStyle != .minimal ? cancelledMessage : nil, icon: "xmark", duration: 1.5)
+                let cancelFeedbackDuration: TimeInterval = isMinimalCompactModeEnabled ? 0 : 1.5
+                showNotchFeedback(
+                    message: isMinimalCompactModeEnabled ? nil : cancelledMessage,
+                    icon: "xmark.circle",
+                    duration: cancelFeedbackDuration
+                )
             }
         default:
             break
@@ -1096,6 +1106,15 @@ final class DictationViewModel: ObservableObject {
         return matchedProfile?.autoEnterEnabled == true
     }
 
+    private var isMinimalCompactModeEnabled: Bool {
+        guard indicatorStyle == .minimal else { return false }
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: UserDefaultsKeys.minimalIndicatorCompactMode) != nil else {
+            return true
+        }
+        return defaults.bool(forKey: UserDefaultsKeys.minimalIndicatorCompactMode)
+    }
+
     private func stopDictation() {
         guard state == .recording, !isStopInFlight else { return }
         clearRecordingCancelWarning()
@@ -1244,7 +1263,7 @@ final class DictationViewModel: ObservableObject {
                         failDictationSession(id: sessionID, error: errorMessage)
                     }
                     showNotchFeedback(
-                        message: indicatorStyle != .minimal ? errorMessage : nil,
+                        message: isMinimalCompactModeEnabled ? nil : errorMessage,
                         icon: "text.magnifyingglass",
                         duration: 2.0,
                         isError: true
@@ -1422,7 +1441,12 @@ final class DictationViewModel: ObservableObject {
 
                 state = .inserting
                 insertingResetTask?.cancel()
-                let resetDelay: Duration = actionFeedbackMessage != nil ? .seconds(actionDisplayDuration) : .seconds(1.5)
+                let resetDelay: Duration
+                if isMinimalCompactModeEnabled {
+                    resetDelay = .zero
+                } else {
+                    resetDelay = actionFeedbackMessage != nil ? .seconds(actionDisplayDuration) : .seconds(1.5)
+                }
                 insertingResetTask = Task {
                     try? await Task.sleep(for: resetDelay)
                     guard !Task.isCancelled else { return }
