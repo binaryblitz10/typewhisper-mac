@@ -888,6 +888,7 @@ final class DictationViewModel: ObservableObject {
                 audioDuckingService.duckAudio(to: Float(audioDuckingLevel))
             }
             state = .recording
+            hotkeyService.activatePriorityEscCapture()
             // Reset hotkey timer so hybrid threshold counts from recording start,
             // not from key press. Slow device init (e.g. iPhone Continuity ~2-3s)
             // would otherwise make the hold appear as "long press" → PTT stop.
@@ -1179,6 +1180,7 @@ final class DictationViewModel: ObservableObject {
         )))
 
         state = .processing
+        hotkeyService.activatePriorityEscCapture()
         processingPhase = String(localized: "Transcribing...")
         markActiveDictationSessionProcessingIfNeeded()
 
@@ -1516,6 +1518,7 @@ final class DictationViewModel: ObservableObject {
         activeDictationSessionID = nil
         pendingPushToTalkDiscardMessage = nil
         clearRecordingCancelWarning()
+        hotkeyService.deactivatePriorityEscCapture()
         state = .idle
         partialText = ""
         recordingStartTime = nil
