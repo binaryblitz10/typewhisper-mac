@@ -1945,7 +1945,7 @@ final class DictationViewModel: ObservableObject {
 
         Task { @MainActor in
             do {
-                _ = try await textInsertionService.insertText(
+                _ = try await textInsertionService.insertTextReliably(
                     text,
                     preserveClipboard: preserveClipboard,
                     autoEnter: false
