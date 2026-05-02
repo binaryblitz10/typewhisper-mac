@@ -1216,11 +1216,15 @@ final class DictationViewModel: ObservableObject {
             if let sessionID {
                 failDictationSession(id: sessionID, error: errorMessage)
             }
+            if isMinimalCompactModeEnabled {
+                resetDictationState()
+                return
+            }
             showNotchFeedback(
                 message: errorMessage,
                 icon: "mic.slash",
                 duration: 2.0
-            )
+            )   
             return
         case .transcribe:
             break
@@ -1282,6 +1286,10 @@ final class DictationViewModel: ObservableObject {
                     let errorMessage = String(localized: "No speech recognized")
                     if let sessionID {
                         failDictationSession(id: sessionID, error: errorMessage)
+                    }
+                    if isMinimalCompactModeEnabled {
+                        resetDictationState()
+                        return
                     }
                     showNotchFeedback(
                         message: isMinimalCompactModeEnabled ? nil : errorMessage,
