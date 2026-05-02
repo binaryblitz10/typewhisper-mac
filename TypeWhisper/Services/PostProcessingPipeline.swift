@@ -64,9 +64,6 @@ final class PostProcessingPipeline {
         steps.append((600, -3))
         steps.sort { $0.priority < $1.priority }
 
-        var result = text
-        var appliedSteps: [String] = []
-
         func stepName(for id: Int) -> String {
             switch id {
             case -4: return "Formatting"
