@@ -1,6 +1,6 @@
 import Foundation
-import TypeWhisperPluginSDK
 import os.log
+import TypeWhisperPluginSDK
 
 private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "TypeWhisper", category: "PostProcessingPipeline")
 
@@ -11,17 +11,20 @@ struct PostProcessingResult {
 
 @MainActor
 final class PostProcessingPipeline {
+    private let numberNormalizationService: NumberNormalizationService
     private let fillerWordService: FillerWordService
     private let snippetService: SnippetService
     private let dictionaryService: DictionaryService
     private let appFormatterService: AppFormatterService?
 
     init(
+        numberNormalizationService: NumberNormalizationService,
         snippetService: SnippetService,
         dictionaryService: DictionaryService,
         appFormatterService: AppFormatterService? = nil,
         fillerWordService: FillerWordService = FillerWordService()
     ) {
+        self.numberNormalizationService = numberNormalizationService
         self.fillerWordService = fillerWordService
         self.snippetService = snippetService
         self.dictionaryService = dictionaryService
@@ -35,7 +38,9 @@ final class PostProcessingPipeline {
         outputFormat: String? = nil,
         llmStepName: String? = nil
     ) async throws -> PostProcessingResult {
-        var result = fillerWordService.removeFillerWordsIfEnabled(from: text)
+        // ITN — priority 50, runs on raw STT output before any other transformation
+        var result = numberNormalizationService.normalize(text)
+        result = fillerWordService.removeFillerWordsIfEnabled(from: result)
         var appliedSteps: [String] = []
         if result != text {
             appliedSteps.append("Filler Words")

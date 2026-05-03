@@ -4,6 +4,7 @@ import Foundation
 /// Prevents typo-induced bugs and makes keys discoverable via autocomplete.
 enum UserDefaultsKeys {
     // MARK: - Dictation
+
     static let audioDuckingEnabled = "audioDuckingEnabled"
     static let audioDuckingLevel = "audioDuckingLevel"
     static let soundFeedbackEnabled = "soundFeedbackEnabled"
@@ -18,6 +19,7 @@ enum UserDefaultsKeys {
     static let transcribeShortQuietClipsAggressively = "transcribeShortQuietClipsAggressively"
 
     // MARK: - Hotkey (JSON-encoded UnifiedHotkey per slot)
+
     static let hybridHotkey = "hybridHotkey"
     static let pttHotkey = "pttHotkey"
     static let toggleHotkey = "toggleHotkey"
@@ -28,12 +30,14 @@ enum UserDefaultsKeys {
     static let recorderToggleHotkey = "recorderToggleHotkey"
 
     // MARK: - Model / Engine
+
     static let selectedEngine = "selectedEngine"
     static let selectedModelId = "selectedModelId"
     static let loadedModelIds = "loadedModelIds"
     static let modelAutoUnloadSeconds = "modelAutoUnloadSeconds"
 
     // MARK: - Settings
+
     static let selectedLanguage = "selectedLanguage"
     static let selectedTask = "selectedTask"
     static let translationEnabled = "translationEnabled"
@@ -41,28 +45,34 @@ enum UserDefaultsKeys {
     static let preferredAppLanguage = "preferredAppLanguage"
 
     // MARK: - API Server
+
     static let apiServerEnabled = "apiServerEnabled"
     static let apiServerPort = "apiServerPort"
     static let updateChannel = "updateChannel"
 
     // MARK: - Audio Device
+
     static let selectedInputDeviceUID = "selectedInputDeviceUID"
 
     // MARK: - Home / Setup
+
     static let setupWizardCompleted = "setupWizardCompleted"
     static let setupWizardCurrentStep = "setupWizardCurrentStep"
 
     // MARK: - Dictionary
+
     static let activatedTermPacks = "activatedTermPacks" // Legacy - kept for migration cleanup
     static let activatedTermPackStates = "activatedTermPackStates"
     static let termPackRegistryLastUpdateCheck = "termPackRegistryLastUpdateCheck"
 
     // MARK: - History
+
     static let historyEnabled = "historyEnabled"
     static let historyRetentionDays = "historyRetentionDays"
     static let saveAudioWithHistory = "saveAudioWithHistory"
 
     // MARK: - Notch Indicator
+
     static let overlayPosition = "overlayPosition"
     static let minimalIndicatorCompactMode = "minimalIndicatorCompactMode"
     static let notchIndicatorVisibility = "notchIndicatorVisibility"
@@ -71,11 +81,13 @@ enum UserDefaultsKeys {
     static let notchIndicatorDisplay = "notchIndicatorDisplay"
 
     // MARK: - Appearance
+
     static let showMenuBarIcon = "showMenuBarIcon"
     static let dockIconBehaviorWhenMenuBarHidden = "dockIconBehaviorWhenMenuBarHidden"
     static let menuBarIconHiddenAlertShown = "menuBarIconHiddenAlertShown"
 
     // MARK: - Memory
+
     static let memoryEnabled = "memoryEnabled"
     static let memoryExtractionProvider = "memoryExtractionProvider"
     static let memoryExtractionModel = "memoryExtractionModel"
@@ -83,6 +95,7 @@ enum UserDefaultsKeys {
     static let memoryExtractionPrompt = "memoryExtractionPrompt"
 
     // MARK: - Text Insertion
+
     static let autoSpacingAroundDictatedText = "autoSpacingAroundDictatedText"
     static let escapeCancelMode = "escapeCancelMode"
     static let adjustCapitalizationBasedOnContext = "adjustCapitalizationBasedOnContext"
@@ -90,19 +103,28 @@ enum UserDefaultsKeys {
     static let removeFillerWordsCustomList = "removeFillerWordsCustomList"
 
     // MARK: - AI Context
+
     static let useSurroundingCursorContext = "useSurroundingCursorContext"
 
+    // MARK: - Number Normalization (ITN)
+
+    static let itnEnabled = "itnEnabled"
+
     // MARK: - Formatting
+
     static let appFormattingEnabled = "appFormattingEnabled"
 
     // MARK: - Accessibility
+
     static let spokenFeedbackEnabled = "spokenFeedbackEnabled"
     static let spokenFeedbackProviderId = "spokenFeedbackProviderId"
 
     // MARK: - Plugin Registry
+
     static let pluginRegistryLastFetch = "pluginRegistryLastFetch"
 
     // MARK: - Recorder
+
     static let recorderMicEnabled = "recorderMicEnabled"
     static let recorderSystemAudioEnabled = "recorderSystemAudioEnabled"
     static let recorderOutputFormat = "recorderOutputFormat"
@@ -111,6 +133,7 @@ enum UserDefaultsKeys {
     static let recorderTrackMode = "recorderTrackMode"
 
     // MARK: - Watch Folder
+
     static let watchFolderBookmark = "watchFolderBookmark"
     static let watchFolderOutputBookmark = "watchFolderOutputBookmark"
     static let watchFolderOutputFormat = "watchFolderOutputFormat"
@@ -121,10 +144,12 @@ enum UserDefaultsKeys {
     static let watchFolderModel = "watchFolderModel"
 
     // MARK: - Workflows
+
     static let workflowDefaultLLMProviderId = "workflowDefaultLLMProviderId"
     static let workflowDefaultLLMCloudModel = "workflowDefaultLLMCloudModel"
 
     // MARK: - Licensing
+
     static let usageIntent = "usageIntent"
     static let userType = "userType"
     static let licenseStatus = "licenseStatus"
@@ -137,6 +162,7 @@ enum UserDefaultsKeys {
     static let lastAcknowledgedPostUpdatePromptRelease = "lastAcknowledgedPostUpdatePromptRelease"
 
     // MARK: - Supporter
+
     static let supporterTier = "supporterTier"
     static let supporterStatus = "supporterStatus"
     static let lastSupporterValidation = "lastSupporterValidation"

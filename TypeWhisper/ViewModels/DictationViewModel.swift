@@ -1,7 +1,7 @@
 import AppKit
 import ApplicationServices
-import Foundation
 import Combine
+import Foundation
 import os
 import TypeWhisperPluginSDK
 
@@ -76,8 +76,8 @@ final class DictationViewModel: ObservableObject {
         case recording
         case processing
         case inserting
-        case promptSelection(String)    // text ready, user picks a prompt
-        case promptProcessing(String)   // prompt name, LLM running
+        case promptSelection(String) // text ready, user picks a prompt
+        case promptProcessing(String) // prompt name, LLM running
         case error(String)
     }
 
@@ -91,15 +91,19 @@ final class DictationViewModel: ObservableObject {
     @Published var audioDuckingEnabled: Bool {
         didSet { UserDefaults.standard.set(audioDuckingEnabled, forKey: UserDefaultsKeys.audioDuckingEnabled) }
     }
+
     @Published var audioDuckingLevel: Double {
         didSet { UserDefaults.standard.set(audioDuckingLevel, forKey: UserDefaultsKeys.audioDuckingLevel) }
     }
+
     @Published var soundFeedbackEnabled: Bool {
         didSet { UserDefaults.standard.set(soundFeedbackEnabled, forKey: UserDefaultsKeys.soundFeedbackEnabled) }
     }
+
     @Published var indicatorTranscriptPreviewEnabled: Bool {
         didSet { Self.persistIndicatorTranscriptPreviewEnabled(indicatorTranscriptPreviewEnabled) }
     }
+
     @Published var indicatorTranscriptPreviewFontSizeOffset: Int {
         didSet {
             let clampedOffset = Self.clampedIndicatorTranscriptPreviewFontSizeOffset(indicatorTranscriptPreviewFontSizeOffset)
@@ -111,32 +115,62 @@ final class DictationViewModel: ObservableObject {
             Self.persistIndicatorTranscriptPreviewFontSizeOffset(clampedOffset)
         }
     }
+
     @Published var preserveClipboard: Bool {
         didSet { UserDefaults.standard.set(preserveClipboard, forKey: UserDefaultsKeys.preserveClipboard) }
     }
+
     @Published var mediaPauseEnabled: Bool {
         didSet { UserDefaults.standard.set(mediaPauseEnabled, forKey: UserDefaultsKeys.mediaPauseEnabled) }
     }
+
     @Published var transcribeShortQuietClipsAggressively: Bool {
         didSet { Self.persistTranscribeShortQuietClipsAggressively(transcribeShortQuietClipsAggressively) }
     }
+
     @Published var escapeCancelMode: EscapeCancelMode {
         didSet { UserDefaults.standard.set(escapeCancelMode.rawValue, forKey: UserDefaultsKeys.escapeCancelMode) }
     }
+
     @Published var spokenFeedbackEnabled: Bool {
         didSet { speechFeedbackService.spokenFeedbackEnabled = spokenFeedbackEnabled }
     }
+
     @Published private(set) var lastTranscribedText: String?
     @Published private(set) var lastTranscriptionLanguage: String?
     @Published var hotkeyLabelsVersion = 0
-    var hybridHotkeyLabel: String { Self.loadHotkeyLabel(for: .hybrid) }
-    var pttHotkeyLabel: String { Self.loadHotkeyLabel(for: .pushToTalk) }
-    var toggleHotkeyLabel: String { Self.loadHotkeyLabel(for: .toggle) }
-    var promptPaletteHotkeyLabel: String { Self.loadHotkeyLabel(for: .promptPalette) }
-    var recentTranscriptionsHotkeyLabel: String { Self.loadHotkeyLabel(for: .recentTranscriptions) }
-    var copyLastTranscriptionHotkeyLabel: String { Self.loadHotkeyLabel(for: .copyLastTranscription) }
-    var pasteLastTranscriptionHotkeyLabel: String { Self.loadHotkeyLabel(for: .pasteLastTranscription) }
-    var recorderToggleHotkeyLabel: String { Self.loadHotkeyLabel(for: .recorderToggle) }
+    var hybridHotkeyLabel: String {
+        Self.loadHotkeyLabel(for: .hybrid)
+    }
+
+    var pttHotkeyLabel: String {
+        Self.loadHotkeyLabel(for: .pushToTalk)
+    }
+
+    var toggleHotkeyLabel: String {
+        Self.loadHotkeyLabel(for: .toggle)
+    }
+
+    var promptPaletteHotkeyLabel: String {
+        Self.loadHotkeyLabel(for: .promptPalette)
+    }
+
+    var recentTranscriptionsHotkeyLabel: String {
+        Self.loadHotkeyLabel(for: .recentTranscriptions)
+    }
+
+    var copyLastTranscriptionHotkeyLabel: String {
+        Self.loadHotkeyLabel(for: .copyLastTranscription)
+    }
+
+    var pasteLastTranscriptionHotkeyLabel: String {
+        Self.loadHotkeyLabel(for: .pasteLastTranscription)
+    }
+
+    var recorderToggleHotkeyLabel: String {
+        Self.loadHotkeyLabel(for: .recorderToggle)
+    }
+
     @Published var activeRuleName: String?
     @Published var activeRuleReasonLabel: String?
     @Published var activeRuleExplanation: String?
@@ -232,6 +266,7 @@ final class DictationViewModel: ObservableObject {
         let task: TranscriptionTask
         let cloudModelOverride: String?
     }
+
     private var lastStreamingParams: StreamingParamsSnapshot?
     private var isStopInFlight = false
     private var activeDictationSessionID: UUID?
@@ -265,6 +300,7 @@ final class DictationViewModel: ObservableObject {
         promptProcessingService: PromptProcessingService,
         workflowTextProcessingService: WorkflowTextProcessingService? = nil,
         appFormatterService: AppFormatterService,
+        numberNormalizationService: NumberNormalizationService = NumberNormalizationService(),
         speechFeedbackService: SpeechFeedbackService,
         accessibilityAnnouncementService: AccessibilityAnnouncementService,
         errorLogService: ErrorLogService,
@@ -297,12 +333,13 @@ final class DictationViewModel: ObservableObject {
         self.accessibilityAnnouncementService = accessibilityAnnouncementService
         self.errorLogService = errorLogService
         self.mediaPlaybackService = mediaPlaybackService
-        self.postProcessingPipeline = PostProcessingPipeline(
+        postProcessingPipeline = PostProcessingPipeline(
+            numberNormalizationService: numberNormalizationService,
             snippetService: snippetService,
             dictionaryService: dictionaryService,
             appFormatterService: appFormatterService
         )
-        self.streamingHandler = StreamingHandler(
+        streamingHandler = StreamingHandler(
             modelManager: modelManager,
             bufferProvider: { [weak audioRecordingService] in
                 audioRecordingService?.getCurrentBuffer() ?? []
@@ -317,7 +354,7 @@ final class DictationViewModel: ObservableObject {
                 audioRecordingService?.totalBufferDuration ?? 0
             }
         )
-        self.promptPaletteHandler = PromptPaletteHandler(
+        promptPaletteHandler = PromptPaletteHandler(
             textInsertionService: textInsertionService,
             workflowService: workflowService,
             promptProcessingService: promptProcessingService,
@@ -325,39 +362,39 @@ final class DictationViewModel: ObservableObject {
             soundService: soundService,
             accessibilityAnnouncementService: accessibilityAnnouncementService
         )
-        self.recentTranscriptionPaletteHandler = RecentTranscriptionPaletteHandler(
+        recentTranscriptionPaletteHandler = RecentTranscriptionPaletteHandler(
             textInsertionService: textInsertionService,
             historyService: historyService,
             recentTranscriptionStore: recentTranscriptionStore
         )
-        self.settingsHandler = DictationSettingsHandler(
+        settingsHandler = DictationSettingsHandler(
             hotkeyService: hotkeyService,
             audioRecordingService: audioRecordingService,
             textInsertionService: textInsertionService,
             profileService: profileService,
             workflowService: workflowService
         )
-        self.audioDuckingEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.audioDuckingEnabled)
-        self.audioDuckingLevel = UserDefaults.standard.object(forKey: UserDefaultsKeys.audioDuckingLevel) as? Double ?? 0.2
-        self.soundFeedbackEnabled = UserDefaults.standard.object(forKey: UserDefaultsKeys.soundFeedbackEnabled) as? Bool ?? true
-        self.indicatorTranscriptPreviewEnabled = Self.loadIndicatorTranscriptPreviewEnabled()
-        self.indicatorTranscriptPreviewFontSizeOffset = Self.loadIndicatorTranscriptPreviewFontSizeOffset()
-        self.preserveClipboard = UserDefaults.standard.bool(forKey: UserDefaultsKeys.preserveClipboard)
-        self.mediaPauseEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.mediaPauseEnabled)
-        self.transcribeShortQuietClipsAggressively = Self.loadTranscribeShortQuietClipsAggressively()
-        self.escapeCancelMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.escapeCancelMode)
+        audioDuckingEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.audioDuckingEnabled)
+        audioDuckingLevel = UserDefaults.standard.object(forKey: UserDefaultsKeys.audioDuckingLevel) as? Double ?? 0.2
+        soundFeedbackEnabled = UserDefaults.standard.object(forKey: UserDefaultsKeys.soundFeedbackEnabled) as? Bool ?? true
+        indicatorTranscriptPreviewEnabled = Self.loadIndicatorTranscriptPreviewEnabled()
+        indicatorTranscriptPreviewFontSizeOffset = Self.loadIndicatorTranscriptPreviewFontSizeOffset()
+        preserveClipboard = UserDefaults.standard.bool(forKey: UserDefaultsKeys.preserveClipboard)
+        mediaPauseEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.mediaPauseEnabled)
+        transcribeShortQuietClipsAggressively = Self.loadTranscribeShortQuietClipsAggressively()
+        escapeCancelMode = UserDefaults.standard.string(forKey: UserDefaultsKeys.escapeCancelMode)
             .flatMap { EscapeCancelMode(rawValue: $0) } ?? .doublePress
-        self.spokenFeedbackEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.spokenFeedbackEnabled)
-        self.indicatorStyle = Self.loadIndicatorStyle()
-        self.notchIndicatorVisibility = UserDefaults.standard.string(forKey: UserDefaultsKeys.notchIndicatorVisibility)
+        spokenFeedbackEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.spokenFeedbackEnabled)
+        indicatorStyle = Self.loadIndicatorStyle()
+        notchIndicatorVisibility = UserDefaults.standard.string(forKey: UserDefaultsKeys.notchIndicatorVisibility)
             .flatMap { NotchIndicatorVisibility(rawValue: $0) } ?? .duringActivity
-        self.notchIndicatorLeftContent = UserDefaults.standard.string(forKey: UserDefaultsKeys.notchIndicatorLeftContent)
+        notchIndicatorLeftContent = UserDefaults.standard.string(forKey: UserDefaultsKeys.notchIndicatorLeftContent)
             .flatMap { NotchIndicatorContent(rawValue: $0) } ?? .timer
-        self.notchIndicatorRightContent = UserDefaults.standard.string(forKey: UserDefaultsKeys.notchIndicatorRightContent)
+        notchIndicatorRightContent = UserDefaults.standard.string(forKey: UserDefaultsKeys.notchIndicatorRightContent)
             .flatMap { NotchIndicatorContent(rawValue: $0) } ?? .waveform
-        self.notchIndicatorDisplay = UserDefaults.standard.string(forKey: UserDefaultsKeys.notchIndicatorDisplay)
+        notchIndicatorDisplay = UserDefaults.standard.string(forKey: UserDefaultsKeys.notchIndicatorDisplay)
             .flatMap { NotchIndicatorDisplay(rawValue: $0) } ?? .activeScreen
-        self.overlayPosition = UserDefaults.standard.string(forKey: UserDefaultsKeys.overlayPosition)
+        overlayPosition = UserDefaults.standard.string(forKey: UserDefaultsKeys.overlayPosition)
             .flatMap { OverlayPosition(rawValue: $0) } ?? .bottom
 
         setupBindings()
@@ -416,7 +453,9 @@ final class DictationViewModel: ObservableObject {
     }
 
     @available(*, deprecated, renamed: "activeRuleName")
-    var activeProfileName: String? { activeRuleName }
+    var activeProfileName: String? {
+        activeRuleName
+    }
 
     nonisolated static func loadIndicatorTranscriptPreviewEnabled(defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: UserDefaultsKeys.indicatorTranscriptPreviewEnabled) as? Bool ?? true
@@ -439,7 +478,7 @@ final class DictationViewModel: ObservableObject {
     }
 
     nonisolated static func persistIndicatorTranscriptPreviewFontSizeOffset(_ offset: Int, defaults: UserDefaults = .standard) {
-        defaults.set(Self.clampedIndicatorTranscriptPreviewFontSizeOffset(offset), forKey: UserDefaultsKeys.indicatorTranscriptPreviewFontSizeOffset)
+        defaults.set(clampedIndicatorTranscriptPreviewFontSizeOffset(offset), forKey: UserDefaultsKeys.indicatorTranscriptPreviewFontSizeOffset)
     }
 
     nonisolated static func loadIndicatorStyle(defaults: UserDefaults = .standard) -> IndicatorStyle {
@@ -460,7 +499,7 @@ final class DictationViewModel: ObservableObject {
     }
 
     nonisolated static func indicatorTranscriptPreviewFontSize(for style: IndicatorStyle, offset: Int) -> CGFloat {
-        style.transcriptPreviewBaseFontSize + CGFloat(Self.clampedIndicatorTranscriptPreviewFontSizeOffset(offset))
+        style.transcriptPreviewBaseFontSize + CGFloat(clampedIndicatorTranscriptPreviewFontSizeOffset(offset))
     }
 
     nonisolated static func indicatorTranscriptPreviewExpandedHeight(for style: IndicatorStyle, offset: Int) -> CGFloat {
@@ -476,7 +515,7 @@ final class DictationViewModel: ObservableObject {
         Self.indicatorTranscriptPreviewExpandedHeight(for: style, offset: indicatorTranscriptPreviewFontSizeOffset)
     }
 
-    nonisolated private static func clampedIndicatorTranscriptPreviewFontSizeOffset(_ offset: Int) -> Int {
+    private nonisolated static func clampedIndicatorTranscriptPreviewFontSizeOffset(_ offset: Int) -> Int {
         min(max(offset, 0), 8)
     }
 
@@ -726,7 +765,6 @@ final class DictationViewModel: ObservableObject {
             cancelCurrentOperation()
         default:
             logger.info("[ESC] State is not .recording or .processing — no action taken")
-            break
         }
     }
 
@@ -908,10 +946,12 @@ final class DictationViewModel: ObservableObject {
         activeAppIcon = nil
 
         if let forcedWorkflowId,
-           let forcedWorkflow = workflowService.workflows.first(where: { $0.id == forcedWorkflowId && $0.isEnabled }) {
+           let forcedWorkflow = workflowService.workflows.first(where: { $0.id == forcedWorkflowId && $0.isEnabled })
+        {
             applyWorkflowMatch(workflowService.forcedWorkflowMatch(for: forcedWorkflow), activeApp: activeApp)
         } else if let forcedProfileId,
-           let forcedProfile = profileService.profiles.first(where: { $0.id == forcedProfileId && $0.isEnabled }) {
+                  let forcedProfile = profileService.profiles.first(where: { $0.id == forcedProfileId && $0.isEnabled })
+        {
             applyRuleMatch(profileService.forcedRuleMatch(for: forcedProfile), activeApp: activeApp)
         } else if let workflowMatch = workflowService.matchWorkflow(bundleIdentifier: activeApp.bundleId, url: nil) {
             applyWorkflowMatch(workflowMatch, activeApp: activeApp)
@@ -966,10 +1006,12 @@ final class DictationViewModel: ObservableObject {
             restoreRecordingSideEffects()
             let errorMessage: String
             if let recordingError = error as? AudioRecordingService.AudioRecordingError,
-               case .noMicrophoneDetected = recordingError {
+               case .noMicrophoneDetected = recordingError
+            {
                 errorMessage = String(localized: "No mic detected.")
             } else if let recordingError = error as? AudioRecordingService.AudioRecordingError,
-                      case .selectedInputDeviceIncompatible(let issue) = recordingError {
+                      case let .selectedInputDeviceIncompatible(issue) = recordingError
+            {
                 audioDeviceService.markSelectedDeviceCompatibility(.incompatible(issue))
                 errorMessage = recordingError.localizedDescription
             } else {
@@ -1000,7 +1042,8 @@ final class DictationViewModel: ObservableObject {
             }
 
             if let bundleId = activeApp.bundleId,
-               let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+               let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId)
+            {
                 activeAppIcon = NSWorkspace.shared.icon(forFile: appURL.path)
             } else {
                 activeAppIcon = nil
@@ -1071,7 +1114,8 @@ final class DictationViewModel: ObservableObject {
 
     private var effectiveTask: TranscriptionTask {
         if let profileTask = matchedProfile?.selectedTask,
-           let task = TranscriptionTask(rawValue: profileTask) {
+           let task = TranscriptionTask(rawValue: profileTask)
+        {
             return task
         }
         return settingsViewModel.selectedTask
@@ -1224,7 +1268,7 @@ final class DictationViewModel: ObservableObject {
                 message: errorMessage,
                 icon: "mic.slash",
                 duration: 2.0
-            )   
+            )
             return
         case .transcribe:
             break
@@ -1316,7 +1360,8 @@ final class DictationViewModel: ObservableObject {
                     guard let base = baseLLMHandler,
                           injectCursorContext,
                           let ctx = capturedContext,
-                          ctx.leftContext != nil || ctx.rightContext != nil else {
+                          ctx.leftContext != nil || ctx.rightContext != nil
+                    else {
                         return baseLLMHandler
                     }
                     return { [ctx] userText in
@@ -1383,7 +1428,8 @@ final class DictationViewModel: ObservableObject {
 
                 // Route to action plugin or insert text
                 if let actionPluginId = self.effectiveActionPluginId,
-                   let actionPlugin = PluginManager.shared.actionPlugin(for: actionPluginId) {
+                   let actionPlugin = PluginManager.shared.actionPlugin(for: actionPluginId)
+                {
                     logger.info("[INSERT] Routing to action plugin: \(actionPluginId, privacy: .public)")
                     try await executeActionPlugin(
                         actionPlugin, pluginId: actionPluginId, text: text,
@@ -1510,11 +1556,25 @@ final class DictationViewModel: ObservableObject {
         }
     }
 
-    func requestMicPermission() { settingsHandler.requestMicPermission() }
-    func requestAccessibilityPermission() { settingsHandler.requestAccessibilityPermission() }
-    func setHotkey(_ hotkey: UnifiedHotkey, for slot: HotkeySlotType) { settingsHandler.setHotkey(hotkey, for: slot) }
-    func clearHotkey(for slot: HotkeySlotType) { settingsHandler.clearHotkey(for: slot) }
-    func isHotkeyAssigned(_ hotkey: UnifiedHotkey, excluding: HotkeySlotType) -> HotkeySlotType? { settingsHandler.isHotkeyAssigned(hotkey, excluding: excluding) }
+    func requestMicPermission() {
+        settingsHandler.requestMicPermission()
+    }
+
+    func requestAccessibilityPermission() {
+        settingsHandler.requestAccessibilityPermission()
+    }
+
+    func setHotkey(_ hotkey: UnifiedHotkey, for slot: HotkeySlotType) {
+        settingsHandler.setHotkey(hotkey, for: slot)
+    }
+
+    func clearHotkey(for slot: HotkeySlotType) {
+        settingsHandler.clearHotkey(for: slot)
+    }
+
+    func isHotkeyAssigned(_ hotkey: UnifiedHotkey, excluding: HotkeySlotType) -> HotkeySlotType? {
+        settingsHandler.isHotkeyAssigned(hotkey, excluding: excluding)
+    }
 
     private static func loadHotkeyLabel(for slotType: HotkeySlotType) -> String {
         DictationSettingsHandler.loadHotkeyLabel(for: slotType)
@@ -1522,10 +1582,14 @@ final class DictationViewModel: ObservableObject {
 
     /// Register profile/workflow hotkeys after app is fully initialized.
     /// Called from ServiceContainer.initialize() to avoid early monitor setup.
-    func registerInitialTriggerHotkeys() { settingsHandler.registerInitialTriggerHotkeys() }
+    func registerInitialTriggerHotkeys() {
+        settingsHandler.registerInitialTriggerHotkeys()
+    }
 
     @available(*, deprecated, renamed: "registerInitialTriggerHotkeys")
-    func registerInitialProfileHotkeys() { registerInitialTriggerHotkeys() }
+    func registerInitialProfileHotkeys() {
+        registerInitialTriggerHotkeys()
+    }
 
     private func resetDictationState() {
         errorResetTask?.cancel()
@@ -1767,10 +1831,10 @@ final class DictationViewModel: ObservableObject {
     /// Instruction appended to any system prompt when cursor context is injected into the user message.
     /// Prevents the model from echoing or summarizing the <context> block.
     private static let cursorContextSystemInstruction = """
-        \nIf the user message contains a <context> block, treat it only as surrounding document context \
-        to improve your response. Do not repeat, summarize, reference, or output the <context> block or its tags. \
-        Return only the final enhanced text.
-        """
+    \nIf the user message contains a <context> block, treat it only as surrounding document context \
+    to improve your response. Do not repeat, summarize, reference, or output the <context> block or its tags. \
+    Return only the final enhanced text.
+    """
 
     /// Builds an LLM handler for the post-processing pipeline.
     /// Priority: workflow > legacy inline/prompt action > translation > nil.
@@ -1813,33 +1877,33 @@ final class DictationViewModel: ObservableObject {
         }
 
         #if canImport(Translation)
-        if let targetCode = translationTarget {
-            if #available(macOS 15, *), let ts = translationService as? TranslationService {
-                let sourceRaw = detectedLanguage ?? configuredLanguage
-                let sourceNormalized = TranslationService.normalizedLanguageIdentifier(from: sourceRaw)
-                if let sourceRaw {
-                    if let sourceNormalized {
-                        if sourceRaw.caseInsensitiveCompare(sourceNormalized) != .orderedSame {
-                            logger.info("Translation source normalized \(sourceRaw, privacy: .public) -> \(sourceNormalized, privacy: .public)")
+            if let targetCode = translationTarget {
+                if #available(macOS 15, *), let ts = translationService as? TranslationService {
+                    let sourceRaw = detectedLanguage ?? configuredLanguage
+                    let sourceNormalized = TranslationService.normalizedLanguageIdentifier(from: sourceRaw)
+                    if let sourceRaw {
+                        if let sourceNormalized {
+                            if sourceRaw.caseInsensitiveCompare(sourceNormalized) != .orderedSame {
+                                logger.info("Translation source normalized \(sourceRaw, privacy: .public) -> \(sourceNormalized, privacy: .public)")
+                            }
+                        } else {
+                            logger.warning("Translation source language \(sourceRaw, privacy: .public) invalid, using auto source")
                         }
-                    } else {
-                        logger.warning("Translation source language \(sourceRaw, privacy: .public) invalid, using auto source")
                     }
-                }
-                let sourceLanguage = sourceNormalized.map { Locale.Language(identifier: $0) }
-                return { text in
-                    guard let targetNormalized = TranslationService.normalizedLanguageIdentifier(from: targetCode) else {
-                        logger.error("Translation target language invalid: \(targetCode, privacy: .public)")
-                        return text
+                    let sourceLanguage = sourceNormalized.map { Locale.Language(identifier: $0) }
+                    return { text in
+                        guard let targetNormalized = TranslationService.normalizedLanguageIdentifier(from: targetCode) else {
+                            logger.error("Translation target language invalid: \(targetCode, privacy: .public)")
+                            return text
+                        }
+                        if targetCode.caseInsensitiveCompare(targetNormalized) != .orderedSame {
+                            logger.info("Translation target normalized \(targetCode, privacy: .public) -> \(targetNormalized, privacy: .public)")
+                        }
+                        let target = Locale.Language(identifier: targetNormalized)
+                        return try await ts.translate(text: text, to: target, source: sourceLanguage)
                     }
-                    if targetCode.caseInsensitiveCompare(targetNormalized) != .orderedSame {
-                        logger.info("Translation target normalized \(targetCode, privacy: .public) -> \(targetNormalized, privacy: .public)")
-                    }
-                    let target = Locale.Language(identifier: targetNormalized)
-                    return try await ts.translate(text: text, to: target, source: sourceLanguage)
                 }
             }
-        }
         #endif
 
         return nil

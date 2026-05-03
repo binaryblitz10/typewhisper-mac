@@ -1830,6 +1830,12 @@
         }
       }
     },
+    "Convert spoken numbers to digits" : {
+
+    },
+    "Converts number words to numerals, currency symbols, and time formats. Example: \"twenty three dollars\" → \"$23\"." : {
+
+    },
     "Copied to clipboard" : {
       "localizations" : {
         "de" : {

@@ -1,5 +1,5 @@
-import Foundation
 import Combine
+import Foundation
 
 @MainActor
 final class ServiceContainer: ObservableObject {
@@ -78,13 +78,13 @@ final class ServiceContainer: ObservableObject {
             promptActionService: promptActionService
         )
         #if canImport(Translation)
-        if #available(macOS 15, *) {
-            translationService = TranslationService()
-        } else {
-            translationService = nil
-        }
+            if #available(macOS 15, *) {
+                translationService = TranslationService()
+            } else {
+                translationService = nil
+            }
         #else
-        translationService = nil
+            translationService = nil
         #endif
         audioDuckingService = AudioDuckingService()
         mediaPlaybackService = MediaPlaybackService()
@@ -101,6 +101,7 @@ final class ServiceContainer: ObservableObject {
         widgetDataService = WidgetDataService(historyService: historyService)
         memoryService = MemoryService(promptProcessingService: promptProcessingService)
         appFormatterService = AppFormatterService()
+        let numberNormalizationService = NumberNormalizationService()
         audioRecorderService = AudioRecorderService()
         promptProcessingService.memoryService = memoryService
         promptProcessingService.modelManagerService = modelManagerService
@@ -136,12 +137,12 @@ final class ServiceContainer: ObservableObject {
             promptActionService: promptActionService,
             promptProcessingService: promptProcessingService,
             appFormatterService: appFormatterService,
+            numberNormalizationService: numberNormalizationService,
             speechFeedbackService: speechFeedbackService,
             accessibilityAnnouncementService: accessibilityAnnouncementService,
             errorLogService: errorLogService,
             mediaPlaybackService: mediaPlaybackService
         )
-
 
         // HTTP API
         let router = APIRouter()
@@ -257,7 +258,8 @@ final class ServiceContainer: ObservableObject {
 
         // Auto-start watch folder if configured
         if UserDefaults.standard.bool(forKey: UserDefaultsKeys.watchFolderAutoStart),
-           let bookmark = UserDefaults.standard.data(forKey: UserDefaultsKeys.watchFolderBookmark) {
+           let bookmark = UserDefaults.standard.data(forKey: UserDefaultsKeys.watchFolderBookmark)
+        {
             var isStale = false
             if let url = try? URL(resolvingBookmarkData: bookmark, options: .withSecurityScope, bookmarkDataIsStale: &isStale) {
                 watchFolderService.startWatching(folderURL: url)

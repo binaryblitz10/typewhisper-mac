@@ -22,6 +22,7 @@ struct GeneralSettingsView: View {
     @AppStorage(UserDefaultsKeys.removeFillerWordsEnabled) private var removeFillerWordsEnabled: Bool = false
     @AppStorage(UserDefaultsKeys.removeFillerWordsCustomList) private var removeFillerWordsCustomList: String = ""
     @AppStorage(UserDefaultsKeys.escapeCancelMode) private var escapeCancelModeRawValue = EscapeCancelMode.doublePress.rawValue
+    @AppStorage(UserDefaultsKeys.itnEnabled) private var itnEnabled: Bool = true
     @AppStorage(UserDefaultsKeys.adjustCapitalizationBasedOnContext) private var adjustCapitalizationBasedOnContext: Bool = false
     @AppStorage(UserDefaultsKeys.minimalIndicatorCompactMode) private var minimalIndicatorCompactMode = true
     @AppStorage(UserDefaultsKeys.dockIconBehaviorWhenMenuBarHidden) private var dockIconBehaviorRawValue = DockIconBehavior.keepVisible.rawValue
@@ -166,6 +167,10 @@ struct GeneralSettingsView: View {
                     Text(String(localized: "Double Press to Cancel")).tag(EscapeCancelMode.doublePress)
                     Text(String(localized: "Single Press to Cancel")).tag(EscapeCancelMode.singlePress)
                 }
+                Toggle(String(localized: "Convert spoken numbers to digits"), isOn: $itnEnabled)
+                Text(String(localized: "Converts number words to numerals, currency symbols, and time formats. Example: \"twenty three dollars\" → \"$23\"."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle(String(localized: "Adjust capitalization based on cursor context"), isOn: $adjustCapitalizationBasedOnContext)
                 Text(String(localized: "Lowercases the first character of inserted text when the cursor is mid-sentence."))
                     .font(.caption)
