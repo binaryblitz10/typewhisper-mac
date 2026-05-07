@@ -136,6 +136,7 @@ final class SpeechPunctuationServiceTests: XCTestCase {
         dictionaryService.addEntry(type: .correction, original: ")", replacement: "]", caseSensitive: true)
 
         let pipeline = PostProcessingPipeline(
+            numberNormalizationService: NumberNormalizationService(),
             snippetService: SnippetService(),
             dictionaryService: dictionaryService,
             appFormatterService: nil,
