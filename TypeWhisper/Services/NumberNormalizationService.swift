@@ -377,7 +377,6 @@ final class NumberNormalizationService {
         // When non-nil, all word values seen so far are single-digit units (< 10).
         // Set to nil when a value >= 10 (teen, tens, scale) or a numeric token is encountered.
         var unitDigits: [Int]? = []
-        var wordTokenCount = 0
 
         while i < n {
             guard !slots[i].consumed else { break }
@@ -459,7 +458,6 @@ final class NumberNormalizationService {
             } else {
                 unitDigits = nil
             }
-            wordTokenCount += 1
 
             // If in digit sequence mode, only accept single-digit values
             if digitSequence != nil {
@@ -981,7 +979,7 @@ final class NumberNormalizationService {
             let (_, _, currTrailing) = stripPunctuation(slots[i].text)
 
             // Handle decimal percent (e.g. "0.5 percent" → "0.5%")
-            if isDecimal, let decVal = decimalValue, let numIdx = numberTokenIdx {
+            if isDecimal, let _ = decimalValue, let numIdx = numberTokenIdx {
                 if word == "percent" || word == "percentage" {
                     // Format decimal: keep original precision
                     let (core, _, _) = stripPunctuation(slots[numIdx].text)
