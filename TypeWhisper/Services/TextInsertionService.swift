@@ -413,7 +413,8 @@ final class TextInsertionService {
         _ text: String,
         preserveClipboard: Bool = false,
         autoEnter: Bool = false,
-        cursorContext: CursorContext? = nil
+        cursorContext: CursorContext? = nil,
+        outputFormat: String? = nil
     ) async throws -> InsertionResult {
         guard isAccessibilityGranted else {
             throw TextInsertionError.accessibilityNotGranted
@@ -423,8 +424,12 @@ final class TextInsertionService {
         let text = applyContextAwareCapitalization(to: text, context: resolvedContext)
 
         let hadFocusedTextField = autoEnter && hasFocusedTextField()
+        let formattedClipboardPayload = ClipboardContentFormatter.payload(for: text, outputFormat: outputFormat)
+        let requiresPasteboardInsertion = ClipboardContentFormatter.requiresPasteboardInsertion(
+            outputFormat: outputFormat
+        )
 
-        if preserveClipboard,
+        if preserveClipboard, !requiresPasteboardInsertion,
            let focusedElement = getFocusedTextElement(),
            insertTextAtAndVerifyChange(element: focusedElement, text: text)
         {
@@ -441,7 +446,11 @@ final class TextInsertionService {
         // Set transcribed text on clipboard and simulate Cmd+V.
         // Text stays on clipboard as fallback if no text field is focused.
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        if let formattedClipboardPayload {
+            formattedClipboardPayload.write(to: pasteboard)
+        } else {
+            pasteboard.setString(text, forType: .string)
+        }
         simulatePaste()
 
         if preserveClipboard {

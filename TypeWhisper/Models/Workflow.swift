@@ -272,12 +272,8 @@ struct WorkflowTrigger: Codable, Equatable, Sendable {
 
     var hasValues: Bool {
         switch kind {
-        case .app:
-            !appBundleIdentifiers.isEmpty
-        case .website:
-            !websitePatterns.isEmpty
-        case .hotkey:
-            !hotkeys.isEmpty
+        case .app, .website, .hotkey:
+            !appBundleIdentifiers.isEmpty || !websitePatterns.isEmpty || !hotkeys.isEmpty
         case .global, .manual:
             true
         }
@@ -491,6 +487,21 @@ extension WorkflowTriggerKind {
 }
 
 extension Workflow {
+    var pluginWorkflowInfo: PluginWorkflowInfo {
+        PluginWorkflowInfo(
+            id: id,
+            name: name,
+            isEnabled: isEnabled,
+            sortOrder: sortOrder,
+            template: PluginWorkflowTemplate(rawValue: template.rawValue) ?? .custom,
+            trigger: trigger?.pluginWorkflowTrigger ?? PluginWorkflowTrigger(kind: .manual),
+            behavior: behavior.pluginWorkflowBehavior,
+            output: output.pluginWorkflowOutput,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
+
     var definition: WorkflowTemplateDefinition {
         template.definition
     }
@@ -645,7 +656,16 @@ extension Workflow {
     private func workflowOutputInstruction(for output: WorkflowOutput) -> String {
         var lines: [String] = []
         if let format = output.format?.trimmingCharacters(in: .whitespacesAndNewlines), !format.isEmpty {
-            lines.append("Return the result as \(format).")
+            let normalizedFormat = format.lowercased()
+            if normalizedFormat == "rtf" || normalizedFormat == "richtext" || normalizedFormat == "rich text" {
+                lines.append("Return Markdown-compatible text for rich-text conversion.")
+                lines.append("Use Markdown syntax for bold, italic, and lists where needed.")
+                lines.append("Return only the final transformed content without explanations or code fences.")
+                lines.append("Never include TYPEWHISPER input boundary markers in the result.")
+                lines.append("Do not output raw RTF control words.")
+            } else {
+                lines.append("Return the result as \(format).")
+            }
         }
         if output.targetActionPluginId != nil {
             lines.append("Return only the transformed text result without commentary.")
@@ -662,5 +682,53 @@ extension Workflow {
             return "\nConfigured source language: \(configuredLanguage)."
         }
         return ""
+    }
+}
+
+private extension WorkflowTrigger {
+    var pluginWorkflowTrigger: PluginWorkflowTrigger {
+        PluginWorkflowTrigger(
+            kind: PluginWorkflowTriggerKind(rawValue: kind.rawValue) ?? .manual,
+            appBundleIdentifiers: appBundleIdentifiers,
+            websitePatterns: websitePatterns,
+            hotkeys: hotkeys.map(\.pluginWorkflowHotkey),
+            hotkeyBehavior: PluginWorkflowHotkeyBehavior(rawValue: hotkeyBehavior.rawValue) ?? .startDictation
+        )
+    }
+}
+
+private extension UnifiedHotkey {
+    var pluginWorkflowHotkey: PluginWorkflowHotkey {
+        PluginWorkflowHotkey(
+            keyCode: keyCode,
+            modifierFlags: modifierFlags,
+            isFn: isFn,
+            isDoubleTap: isDoubleTap,
+            modifierKeyCodes: modifierKeyCodes.sorted(),
+            mouseButton: mouseButton
+        )
+    }
+}
+
+private extension WorkflowBehavior {
+    var pluginWorkflowBehavior: PluginWorkflowBehavior {
+        PluginWorkflowBehavior(
+            settings: settings,
+            fineTuning: fineTuning,
+            providerId: providerId,
+            cloudModel: cloudModel,
+            temperatureMode: temperatureMode,
+            temperatureValue: temperatureValue
+        )
+    }
+}
+
+private extension WorkflowOutput {
+    var pluginWorkflowOutput: PluginWorkflowOutput {
+        PluginWorkflowOutput(
+            format: format,
+            autoEnter: autoEnter,
+            targetActionPluginId: targetActionPluginId
+        )
     }
 }

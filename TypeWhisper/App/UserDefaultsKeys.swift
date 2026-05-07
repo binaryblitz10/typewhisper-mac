@@ -113,6 +113,7 @@ enum UserDefaultsKeys {
     // MARK: - Formatting
 
     static let appFormattingEnabled = "appFormattingEnabled"
+    static let dictationPunctuationProfiles = "dictationPunctuationProfiles"
 
     // MARK: - Accessibility
 

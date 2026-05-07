@@ -1,0 +1,17 @@
+{
+    "id": "com.typewhisper.assemblyai",
+    "name": "AssemblyAI",
+    "version": "1.0.4",
+    "minHostVersion": "1.4.0",
+    "sdkCompatibilityVersion": "v1",
+    "minOSVersion": "14.0",
+    "author": "TypeWhisper",
+    "description": "Cloud transcription via AssemblyAI API with real-time WebSocket streaming. Requires API key.",
+    "descriptions": {
+        "de": "Cloud-Transkription ueber die AssemblyAI-API mit Echtzeit-WebSocket-Streaming. Erfordert API-Key."
+    },
+    "category": "transcription",
+    "iconSystemName": "waveform.badge.mic",
+    "principalClass": "AssemblyAIPlugin",
+    "requiresAPIKey": true
+}

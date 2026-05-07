@@ -380,6 +380,24 @@ final class LanguageLocalizationTests: XCTestCase {
         XCTAssertTrue(searchTerms.contains(where: { $0.localizedCaseInsensitiveContains("englisch") }))
     }
 
+    func testLocalizedAppLanguageNameDisplaysDeepgramMultilingualCode() {
+        UserDefaults.standard.set("en", forKey: UserDefaultsKeys.preferredAppLanguage)
+        XCTAssertEqual(localizedAppLanguageName(for: "multi"), "Multilingual")
+
+        UserDefaults.standard.set("de", forKey: UserDefaultsKeys.preferredAppLanguage)
+        XCTAssertEqual(localizedAppLanguageName(for: "multi"), "Mehrsprachig")
+    }
+
+    func testLanguageSearchTermsIncludeDeepgramMultilingualAliases() {
+        UserDefaults.standard.set("de", forKey: UserDefaultsKeys.preferredAppLanguage)
+
+        let searchTerms = localizedAppLanguageSearchTerms(for: "multi")
+
+        XCTAssertTrue(searchTerms.contains(where: { $0.caseInsensitiveCompare("multi") == .orderedSame }))
+        XCTAssertTrue(searchTerms.contains(where: { $0.caseInsensitiveCompare("Multilingual") == .orderedSame }))
+        XCTAssertTrue(searchTerms.contains(where: { $0.caseInsensitiveCompare("Mehrsprachig") == .orderedSame }))
+    }
+
     @MainActor
     func testSettingsLanguageOptionsDoNotGoEmptyBeforePluginsLoad() throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory(prefix: "LanguageFallbackTests")

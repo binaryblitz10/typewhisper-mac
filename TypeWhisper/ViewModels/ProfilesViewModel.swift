@@ -22,6 +22,9 @@ func localizedAppLanguageName(for code: String) -> String {
     guard code != "auto" else {
         return localizedAppText("Auto-Detect", de: "Automatisch erkennen")
     }
+    guard code != "multi" else {
+        return localizedAppText("Multilingual", de: "Mehrsprachig")
+    }
 
     let locale = Locale(identifier: preferredAppLanguageCode())
     return locale.localizedString(forIdentifier: code) ?? code
@@ -61,6 +64,10 @@ func localizedAppLanguageSearchTerms(for code: String, preferredDisplayName: Str
 
     appendLanguageSearchTerm(code, to: &terms)
     appendLanguageSearchTerm(localizedAppLanguageName(for: code), to: &terms)
+    if code == "multi" {
+        appendLanguageSearchTerm("Multilingual", to: &terms)
+        appendLanguageSearchTerm("Mehrsprachig", to: &terms)
+    }
 
     let locales = [
         Locale.current,
@@ -107,34 +114,13 @@ func localizedAppLanguageFlag(for code: String) -> String? {
         return nil
     }
 
-    let inferredRegionByLanguage = [
-        "ar": "SA",
-        "cs": "CZ",
-        "da": "DK",
-        "de": "DE",
-        "en": "US",
-        "el": "GR",
-        "es": "ES",
-        "fi": "FI",
-        "fr": "FR",
-        "he": "IL",
-        "hi": "IN",
-        "hu": "HU",
-        "id": "ID",
-        "it": "IT",
-        "ja": "JP",
-        "ko": "KR",
-        "nl": "NL",
-        "no": "NO",
-        "pl": "PL",
-        "ro": "RO",
-        "ru": "RU",
-        "sv": "SE",
-        "th": "TH",
-        "tr": "TR",
-        "uk": "UA",
-        "vi": "VN",
-        "zh": "CN"
+    let inferredRegionByLanguage: [String: String] = [
+        "ar": "SA", "cs": "CZ", "da": "DK", "de": "DE", "en": "US",
+        "el": "GR", "es": "ES", "fi": "FI", "fr": "FR", "he": "IL",
+        "hi": "IN", "hu": "HU", "id": "ID", "it": "IT", "ja": "JP",
+        "ko": "KR", "nl": "NL", "no": "NO", "pl": "PL", "ro": "RO",
+        "ru": "RU", "sv": "SE", "th": "TH", "tr": "TR", "uk": "UA",
+        "vi": "VN", "zh": "CN",
     ]
 
     guard let inferredRegion = inferredRegionByLanguage[languageCode] else {
@@ -142,20 +128,6 @@ func localizedAppLanguageFlag(for code: String) -> String? {
     }
 
     return emojiFlag(forRegionCode: inferredRegion)
-}
-
-func localizedAppLanguageBadgeText(for code: String) -> String {
-    let components = NSLocale.components(fromLocaleIdentifier: code)
-    let languageKey = NSLocale.Key.languageCode.rawValue
-    guard let languageCode = components[languageKey], !languageCode.isEmpty else {
-        return code.uppercased()
-    }
-
-    if code.contains("-") {
-        return code.uppercased()
-    }
-
-    return languageCode.uppercased()
 }
 
 private func emojiFlag(forRegionCode regionCode: String) -> String? {
@@ -173,6 +145,32 @@ private func emojiFlag(forRegionCode regionCode: String) -> String? {
     }
 
     return String(scalars)
+}
+
+func localizedAppLanguageBadgeText(for code: String) -> String {
+    let components = NSLocale.components(fromLocaleIdentifier: code)
+    let languageKey = NSLocale.Key.languageCode.rawValue
+    guard let languageCode = components[languageKey], !languageCode.isEmpty else {
+        return code.uppercased()
+    }
+
+    if code.contains("-") {
+        return code.uppercased()
+    }
+
+    return languageCode.uppercased()
+}
+
+struct LocalizedAppLanguageBadgeDescriptor: Equatable {
+    let text: String
+    let accessibilityLabel: String
+}
+
+func localizedAppLanguageBadgeDescriptor(for code: String) -> LocalizedAppLanguageBadgeDescriptor {
+    LocalizedAppLanguageBadgeDescriptor(
+        text: localizedAppLanguageBadgeText(for: code),
+        accessibilityLabel: localizedAppLanguageName(for: code)
+    )
 }
 
 func localizedAppLanguageNames(for codes: [String]) -> [String] {
@@ -303,14 +301,21 @@ final class ProfilesViewModel: ObservableObject {
 
     private let profileService: ProfileService
     private let historyService: HistoryService
+    private let textInsertionService: TextInsertionService
     let settingsViewModel: SettingsViewModel
     private var cancellables = Set<AnyCancellable>()
     private var editorNameManuallyEdited = false
 
-    init(profileService: ProfileService, historyService: HistoryService, settingsViewModel: SettingsViewModel) {
+    init(
+        profileService: ProfileService,
+        historyService: HistoryService,
+        settingsViewModel: SettingsViewModel,
+        textInsertionService: TextInsertionService
+    ) {
         self.profileService = profileService
         self.historyService = historyService
         self.settingsViewModel = settingsViewModel
+        self.textInsertionService = textInsertionService
         self.profiles = profileService.profiles
         setupBindings()
         scanInstalledApps()
@@ -925,7 +930,10 @@ final class ProfilesViewModel: ObservableObject {
     }
 
     private func refreshEditorContext() {
-        let activeApp = ServiceContainer.shared.textInsertionService.captureActiveApp()
+        let textInsertionService = self.textInsertionService
+        let activeApp = MainActor.assumeIsolated {
+            textInsertionService.captureActiveApp()
+        }
         editorDetectedAppName = activeApp.name
         editorDetectedBundleIdentifier = activeApp.bundleId
         editorDetectedURL = nil
@@ -938,7 +946,7 @@ final class ProfilesViewModel: ObservableObject {
         guard let bundleId = bundleIdSnapshot else { return }
 
         Task { [weak self] in
-            let resolvedURL = await ServiceContainer.shared.textInsertionService.resolveBrowserURL(bundleId: bundleId)
+            let resolvedURL = await textInsertionService.resolveBrowserURL(bundleId: bundleId)
 
             await MainActor.run {
                 guard let self else { return }

@@ -33,10 +33,16 @@ private struct MockHostServices: HostServices {
     let activeAppName: String? = "Notes"
     let eventBus: EventBusProtocol
     let availableRuleNames: [String]
+    let availableWorkflows: [PluginWorkflowInfo]
 
-    init(eventBus: EventBusProtocol, availableRuleNames: [String]) {
+    init(
+        eventBus: EventBusProtocol,
+        availableRuleNames: [String],
+        availableWorkflows: [PluginWorkflowInfo] = []
+    ) {
         self.eventBus = eventBus
         self.availableRuleNames = availableRuleNames
+        self.availableWorkflows = availableWorkflows
         self.pluginDataDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     }
 
@@ -169,6 +175,45 @@ private final class MockCatalogTranscriptionPlugin: NSObject, TranscriptionEngin
     }
 }
 
+@objc(MockStructuredTranscriptionPlugin)
+private final class MockStructuredTranscriptionPlugin: NSObject, StructuredTranscriptionEnginePlugin, @unchecked Sendable {
+    static let pluginId = "com.typewhisper.mock.structured"
+    static let pluginName = "Mock Structured"
+
+    required override init() {}
+
+    func activate(host: HostServices) {}
+    func deactivate() {}
+
+    var providerId: String { "mock-structured" }
+    var providerDisplayName: String { "Mock Structured" }
+    var isConfigured: Bool { true }
+    var transcriptionModels: [PluginModelInfo] { [] }
+    var selectedModelId: String? { nil }
+    func selectModel(_ modelId: String) {}
+    var supportsTranslation: Bool { false }
+
+    func transcribe(audio: AudioData, language: String?, translate: Bool, prompt: String?) async throws -> PluginTranscriptionResult {
+        PluginTranscriptionResult(text: "legacy", detectedLanguage: language)
+    }
+
+    func transcribeStructured(audio: AudioData, language: String?, translate: Bool, prompt: String?) async throws -> PluginStructuredTranscriptionResult {
+        PluginStructuredTranscriptionResult(
+            text: "Speaker A: Hello",
+            detectedLanguage: language,
+            segments: [
+                PluginStructuredTranscriptionSegment(
+                    text: "Hello",
+                    start: 0.25,
+                    end: 1.5,
+                    speakerLabel: "Speaker A",
+                    speakerConfidence: 0.91
+                )
+            ]
+        )
+    }
+}
+
 private final class MockTTSPlaybackSession: TTSPlaybackSession, @unchecked Sendable {
     var isActive = true
     var onFinish: (@Sendable () -> Void)?
@@ -226,6 +271,58 @@ final class ProtocolContractTests: XCTestCase {
         XCTAssertEqual(host.availableRuleNames, ["Work", "Docs"])
         XCTAssertEqual(host.availableProfileNames, ["Work", "Docs"])
         XCTAssertEqual(host.activeAppName, "Notes")
+    }
+
+    func testHostServicesExposeWorkflowSnapshots() throws {
+        let workflowId = try XCTUnwrap(UUID(uuidString: "4C35C70D-4AD2-48C7-9D05-6A1C5A4A6D2C"))
+        let workflow = PluginWorkflowInfo(
+            id: workflowId,
+            name: "Dynamic Cleanup",
+            isEnabled: true,
+            sortOrder: 2,
+            template: .custom,
+            trigger: PluginWorkflowTrigger(
+                kind: .website,
+                appBundleIdentifiers: [],
+                websitePatterns: ["example.com"],
+                hotkeys: [
+                    PluginWorkflowHotkey(
+                        keyCode: 15,
+                        modifierFlags: 1_048_576,
+                        isFn: false,
+                        isDoubleTap: true,
+                        modifierKeyCodes: [55],
+                        mouseButton: nil
+                    )
+                ],
+                hotkeyBehavior: .processSelectedText
+            ),
+            behavior: PluginWorkflowBehavior(
+                settings: ["triggerWord": "cleanup"],
+                fineTuning: "Keep speaker intent.",
+                providerId: "openai",
+                cloudModel: "gpt-5.4",
+                temperatureMode: .custom,
+                temperatureValue: 0.2
+            ),
+            output: PluginWorkflowOutput(
+                format: "markdown",
+                autoEnter: true,
+                targetActionPluginId: "com.example.action"
+            ),
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 200)
+        )
+        let host = MockHostServices(
+            eventBus: MockEventBus(),
+            availableRuleNames: ["Dynamic Cleanup"],
+            availableWorkflows: [workflow]
+        )
+
+        XCTAssertEqual(host.availableWorkflows, [workflow])
+        XCTAssertEqual(host.availableWorkflows.first?.trigger.websitePatterns, ["example.com"])
+        XCTAssertEqual(host.availableWorkflows.first?.behavior.settings["triggerWord"], "cleanup")
+        XCTAssertEqual(host.availableWorkflows.first?.output.targetActionPluginId, "com.example.action")
     }
 
     func testTranscriptionPluginUsesDefaultStreamingFallback() async throws {
@@ -289,6 +386,28 @@ final class ProtocolContractTests: XCTestCase {
         XCTAssertFalse(legacyPlugin is any TranscriptionModelCatalogProviding)
         XCTAssertEqual(legacyPlugin.modelCatalog.map(\.id), ["tiny"])
         XCTAssertEqual(catalogPlugin.modelCatalog.map(\.id), ["tiny", "large"])
+    }
+
+    func testStructuredTranscriptionProtocolIsOptionalAndCarriesSpeakerMetadata() async throws {
+        let legacyPlugin = MockTranscriptionPlugin()
+        let structuredPlugin = MockStructuredTranscriptionPlugin()
+        let erasedStructuredPlugin: Any = structuredPlugin
+
+        XCTAssertFalse(legacyPlugin is any StructuredTranscriptionEnginePlugin)
+        XCTAssertTrue(erasedStructuredPlugin is any StructuredTranscriptionEnginePlugin)
+
+        let result = try await structuredPlugin.transcribeStructured(
+            audio: AudioData(samples: [0.1], wavData: Data([0x00]), duration: 1),
+            language: "en",
+            translate: false,
+            prompt: nil
+        )
+
+        XCTAssertEqual(result.text, "Speaker A: Hello")
+        XCTAssertEqual(result.detectedLanguage, "en")
+        XCTAssertEqual(result.segments.first?.text, "Hello")
+        XCTAssertEqual(result.segments.first?.speakerLabel, "Speaker A")
+        XCTAssertEqual(result.segments.first?.speakerConfidence, 0.91)
     }
 
     func testTTSPluginCanPersistVoiceAndReceiveSpeakRequest() async throws {

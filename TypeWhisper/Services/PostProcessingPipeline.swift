@@ -16,24 +16,31 @@ final class PostProcessingPipeline {
     private let snippetService: SnippetService
     private let dictionaryService: DictionaryService
     private let appFormatterService: AppFormatterService?
+    private let speechPunctuationService: SpeechPunctuationService
+    private let punctuationStrategyResolver: PunctuationStrategyResolver
 
     init(
         numberNormalizationService: NumberNormalizationService,
         snippetService: SnippetService,
         dictionaryService: DictionaryService,
         appFormatterService: AppFormatterService? = nil,
-        fillerWordService: FillerWordService = FillerWordService()
+        fillerWordService: FillerWordService = FillerWordService(),
+        speechPunctuationService: SpeechPunctuationService = SpeechPunctuationService(),
+        punctuationStrategyResolver: PunctuationStrategyResolver
     ) {
         self.numberNormalizationService = numberNormalizationService
         self.fillerWordService = fillerWordService
         self.snippetService = snippetService
         self.dictionaryService = dictionaryService
         self.appFormatterService = appFormatterService
+        self.speechPunctuationService = speechPunctuationService
+        self.punctuationStrategyResolver = punctuationStrategyResolver
     }
 
     func process(
         text: String,
         context: PostProcessingContext,
+        dictationContext: DictationRuntimeContext? = nil,
         llmHandler: ((String) async throws -> String)? = nil,
         outputFormat: String? = nil,
         llmStepName: String? = nil
@@ -50,7 +57,7 @@ final class PostProcessingPipeline {
         let plugins = PluginManager.shared.postProcessors
 
         // Build priority-ordered step list: (priority, id)
-        // IDs: -1 = LLM, -2 = snippets, -3 = dictionary, -4 = app formatter, 0+ = plugin index
+        // IDs: -1 = LLM, -2 = snippets, -3 = dictionary, -4 = app formatter, -5 = punctuation, 0+ = plugin index
         var steps: [(priority: Int, id: Int)] = []
 
         // App formatter at priority 150 (before LLM at 300)
@@ -58,6 +65,8 @@ final class PostProcessingPipeline {
         if formattingEnabled, outputFormat != nil, appFormatterService != nil {
             steps.append((150, -4))
         }
+
+        steps.append((200, -5))
 
         if llmHandler != nil {
             steps.append((300, -1))
@@ -72,6 +81,7 @@ final class PostProcessingPipeline {
         func stepName(for id: Int) -> String {
             switch id {
             case -4: return "Formatting"
+            case -5: return "Speech Punctuation"
             case -1: return llmStepName ?? "Prompt"
             case -2: return "Snippets"
             case -3: return "Corrections"
@@ -91,6 +101,30 @@ final class PostProcessingPipeline {
                         bundleId: context.bundleIdentifier,
                         outputFormat: outputFormat
                     )
+                case -5:
+                    if let resolvedStrategy = punctuationStrategyResolver.resolve(
+                        engineId: dictationContext?.engineId,
+                        modelId: dictationContext?.modelId,
+                        configuredLanguage: dictationContext?.configuredLanguage,
+                        detectedLanguage: dictationContext?.detectedLanguage ?? context.language
+                    ) {
+                        switch resolvedStrategy.strategy {
+                        case .nativeOnly:
+                            break
+                        case .automatic:
+                            result = speechPunctuationService.normalize(
+                                text: result,
+                                language: resolvedStrategy.languageCode,
+                                mode: .selectiveFallback
+                            )
+                        case .fallbackOnly:
+                            result = speechPunctuationService.normalize(
+                                text: result,
+                                language: resolvedStrategy.languageCode,
+                                mode: .fullFallback
+                            )
+                        }
+                    }
                 case -1:
                     result = try await llmHandler!(result)
                 case -2:

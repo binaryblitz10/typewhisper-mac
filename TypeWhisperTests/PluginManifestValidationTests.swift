@@ -5,7 +5,7 @@ import TypeWhisperPluginSDK
 final class PluginManifestValidationTests: XCTestCase {
     func testAllPluginManifestsDecodeAndDeclareCompatibility() throws {
         let manifestURLs = try FileManager.default.contentsOfDirectory(
-            at: TestSupport.repoRoot.appendingPathComponent("Plugins"),
+            at: TestSupport.repoRoot.appendingPathComponent("TypeWhisperPluginSDK/Plugins"),
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         )
@@ -37,12 +37,12 @@ final class PluginManifestValidationTests: XCTestCase {
 
     func testAppleSiliconOnlyPluginsDeclareArm64Compatibility() throws {
         let manifestPaths = [
-            "Plugins/WhisperKitPlugin/manifest.json",
-            "Plugins/ParakeetPlugin/manifest.json",
-            "Plugins/GranitePlugin/manifest.json",
-            "Plugins/Gemma4Plugin/manifest.json",
-            "Plugins/Qwen3Plugin/manifest.json",
-            "Plugins/VoxtralPlugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/WhisperKitPlugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/ParakeetPlugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/GranitePlugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/Gemma4Plugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/Qwen3Plugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/VoxtralPlugin/manifest.json",
         ]
 
         for relativePath in manifestPaths {
@@ -54,7 +54,7 @@ final class PluginManifestValidationTests: XCTestCase {
     }
 
     func testOpenAIPluginManifestDeclaresCloudHostingWithoutAPIKeyRequirement() throws {
-        let manifestURL = TestSupport.repoRoot.appendingPathComponent("Plugins/OpenAIPlugin/manifest.json")
+        let manifestURL = TestSupport.repoRoot.appendingPathComponent("TypeWhisperPluginSDK/Plugins/OpenAIPlugin/manifest.json")
         let data = try Data(contentsOf: manifestURL)
         let manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
 
@@ -200,6 +200,69 @@ final class Gemma4PluginModelPolicyTests: XCTestCase {
             message,
             "Download timed out while fetching Gemma 4 from Hugging Face. Please retry. Adding an optional HuggingFace token in this plugin can also increase download rate limits."
         )
+    }
+
+    func testGemma4MissingWeightErrorsUseCacheRecoveryMessage() throws {
+        let model = try XCTUnwrap(Gemma4Plugin.modelDefinition(for: "gemma-4-e2b-it-4bit"))
+        let error = NSError(
+            domain: "Test",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Key embed_vision.embedding_projection.weight not found in Gemma4MultiModalEmbedder.Linear"
+            ]
+        )
+
+        let message = Gemma4Plugin.userFacingLoadErrorMessage(for: error, modelDef: model)
+
+        XCTAssertEqual(
+            message,
+            "The downloaded Gemma model cache appears incomplete or incompatible. Delete the cached model and download it again."
+        )
+    }
+
+    func testGemma4CheckpointShapeErrorsUseCacheRecoveryMessage() throws {
+        let model = try XCTUnwrap(Gemma4Plugin.modelDefinition(for: "gemma-4-e4b-it-4bit"))
+        let error = NSError(
+            domain: "Test",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Checkpoint tensor shape mismatch for language_model.layers.0.self_attn.q_proj.weight"
+            ]
+        )
+
+        let message = Gemma4Plugin.userFacingLoadErrorMessage(for: error, modelDef: model)
+
+        XCTAssertEqual(
+            message,
+            "The downloaded Gemma model cache appears incomplete or incompatible. Delete the cached model and download it again."
+        )
+    }
+
+    func testGemma4ResetCachedModelDeletesCacheAndClearsLoadedState() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let host = MockHostServices(pluginDataDirectory: appSupportDirectory)
+        let plugin = Gemma4Plugin()
+        let model = try XCTUnwrap(Gemma4Plugin.modelDefinition(for: "gemma-4-e2b-it-4bit"))
+        let modelDirectory = appSupportDirectory
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent(model.repoId, isDirectory: true)
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        try Data("partial".utf8).write(to: modelDirectory.appendingPathComponent("model.safetensors"))
+
+        plugin.activate(host: host)
+        try await Task.sleep(nanoseconds: 10_000_000)
+        host.setUserDefault(model.id, forKey: "loadedModel")
+        plugin.beginModelLoad(for: model, isAlreadyDownloaded: true)
+
+        plugin.resetCachedModel(model)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelDirectory.path))
+        XCTAssertNil(host.userDefault(forKey: "loadedModel"))
+        XCTAssertEqual(plugin.modelState, .notLoaded)
+        XCTAssertEqual(plugin.currentDownloadProgress, 0)
+        XCTAssertGreaterThanOrEqual(host.capabilitiesChangedCount, 2)
     }
 
     func testGemma4ValidatesHuggingFaceTokenAgainstWhoAmIEndpoint() async throws {
@@ -627,6 +690,10 @@ final class PluginDictionaryGuardTests: XCTestCase {
         )
     }
 
+    func testDeepgramSupportedLanguagesIncludeMultilingualCodeSwitchingMode() {
+        XCTAssertTrue(DeepgramPlugin().supportedLanguages.contains("multi"))
+    }
+
     func testDeepgramDictionaryQueryItemsLimitDictionaryTermsTo100AndPreserveOrder() {
         let prompt = PluginDictionaryTerms.prompt(from: makeLongTerms(count: 150, length: 10), maxLength: 10_000)
         let queryItems = DeepgramPlugin.dictionaryQueryItems(prompt: prompt, modelId: "nova-2")
@@ -959,6 +1026,7 @@ final class PluginArchitectureCompatibilityTests: XCTestCase {
             loadedPlugin: nil,
             registryPlugin: RegistryPlugin(
                 id: "com.typewhisper.mock.sdk-missing",
+                source: .official,
                 name: "Marketplace Replacement",
                 version: "1.3.1",
                 minHostVersion: "1.3.0",
@@ -968,6 +1036,7 @@ final class PluginArchitectureCompatibilityTests: XCTestCase {
                 author: "TypeWhisper",
                 description: "Replacement",
                 category: "utility",
+                categories: ["utility"],
                 size: 1,
                 downloadURL: "https://example.com/replacement.zip",
                 iconSystemName: nil,
@@ -997,6 +1066,7 @@ final class PluginArchitectureCompatibilityTests: XCTestCase {
     func testRegistryPluginRejectsArm64OnlyEntryOnIntel() {
         let plugin = RegistryPlugin(
             id: "com.typewhisper.mock.arm64-only",
+            source: .official,
             name: "ARM64 Only",
             version: "1.0.0",
             minHostVersion: "1.0.0",
@@ -1006,6 +1076,7 @@ final class PluginArchitectureCompatibilityTests: XCTestCase {
             author: "TypeWhisper",
             description: "Test plugin",
             category: "transcription",
+            categories: ["transcription"],
             size: 1,
             downloadURL: "https://example.com/plugin.zip",
             iconSystemName: nil,

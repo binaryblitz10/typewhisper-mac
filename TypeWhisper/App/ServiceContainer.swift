@@ -16,7 +16,6 @@ final class ServiceContainer: ObservableObject {
     let textDiffService: TextDiffService
     let profileService: ProfileService
     let workflowService: WorkflowService
-    let legacyWorkflowService: LegacyWorkflowService
     let translationService: AnyObject? // TranslationService (macOS 15+)
     let audioDuckingService: AudioDuckingService
     let mediaPlaybackService: MediaPlaybackService
@@ -32,6 +31,10 @@ final class ServiceContainer: ObservableObject {
     let widgetDataService: WidgetDataService
     let memoryService: MemoryService
     let appFormatterService: AppFormatterService
+    let dictationPunctuationProfileStore: DictationPunctuationProfileStore
+    let punctuationRulesLoader: PunctuationRulesLoader
+    let punctuationStrategyResolver: PunctuationStrategyResolver
+    let punctuationVerificationService: PunctuationVerificationService
     let audioRecorderService: AudioRecorderService
     let watchFolderService: WatchFolderService
     let accessibilityAnnouncementService: AccessibilityAnnouncementService
@@ -73,10 +76,6 @@ final class ServiceContainer: ObservableObject {
         profileService = ProfileService()
         workflowService = WorkflowService()
         promptActionService = PromptActionService()
-        legacyWorkflowService = LegacyWorkflowService(
-            profileService: profileService,
-            promptActionService: promptActionService
-        )
         #if canImport(Translation)
             if #available(macOS 15, *) {
                 translationService = TranslationService()
@@ -102,6 +101,10 @@ final class ServiceContainer: ObservableObject {
         memoryService = MemoryService(promptProcessingService: promptProcessingService)
         appFormatterService = AppFormatterService()
         let numberNormalizationService = NumberNormalizationService()
+        dictationPunctuationProfileStore = DictationPunctuationProfileStore()
+        punctuationRulesLoader = PunctuationRulesLoader()
+        punctuationStrategyResolver = PunctuationStrategyResolver(profileStore: dictationPunctuationProfileStore)
+        punctuationVerificationService = PunctuationVerificationService(rulesLoader: punctuationRulesLoader)
         audioRecorderService = AudioRecorderService()
         promptProcessingService.memoryService = memoryService
         promptProcessingService.modelManagerService = modelManagerService
@@ -138,6 +141,8 @@ final class ServiceContainer: ObservableObject {
             promptProcessingService: promptProcessingService,
             appFormatterService: appFormatterService,
             numberNormalizationService: numberNormalizationService,
+            punctuationStrategyResolver: punctuationStrategyResolver,
+            speechPunctuationService: SpeechPunctuationService(rulesLoader: punctuationRulesLoader),
             speechFeedbackService: speechFeedbackService,
             accessibilityAnnouncementService: accessibilityAnnouncementService,
             errorLogService: errorLogService,
@@ -166,7 +171,8 @@ final class ServiceContainer: ObservableObject {
         profilesViewModel = ProfilesViewModel(
             profileService: profileService,
             historyService: historyService,
-            settingsViewModel: settingsViewModel
+            settingsViewModel: settingsViewModel,
+            textInsertionService: textInsertionService
         )
         dictionaryViewModel = DictionaryViewModel(dictionaryService: dictionaryService)
         snippetsViewModel = SnippetsViewModel(snippetService: snippetService)
@@ -238,6 +244,9 @@ final class ServiceContainer: ObservableObject {
                 }
             }
             return names
+        }
+        pluginManager.setWorkflowProvider { [weak self] in
+            self?.workflowService.workflows.map(\.pluginWorkflowInfo) ?? []
         }
         pluginManager.scanAndLoadPlugins()
 

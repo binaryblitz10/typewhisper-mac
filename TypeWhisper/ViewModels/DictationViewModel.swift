@@ -301,6 +301,8 @@ final class DictationViewModel: ObservableObject {
         workflowTextProcessingService: WorkflowTextProcessingService? = nil,
         appFormatterService: AppFormatterService,
         numberNormalizationService: NumberNormalizationService = NumberNormalizationService(),
+        punctuationStrategyResolver: PunctuationStrategyResolver,
+        speechPunctuationService: SpeechPunctuationService,
         speechFeedbackService: SpeechFeedbackService,
         accessibilityAnnouncementService: AccessibilityAnnouncementService,
         errorLogService: ErrorLogService,
@@ -337,7 +339,9 @@ final class DictationViewModel: ObservableObject {
             numberNormalizationService: numberNormalizationService,
             snippetService: snippetService,
             dictionaryService: dictionaryService,
-            appFormatterService: appFormatterService
+            appFormatterService: appFormatterService,
+            speechPunctuationService: speechPunctuationService,
+            punctuationStrategyResolver: punctuationStrategyResolver
         )
         streamingHandler = StreamingHandler(
             modelManager: modelManager,
@@ -1090,11 +1094,11 @@ final class DictationViewModel: ObservableObject {
                 return
             }
             guard let refinedRule = profileService.matchRule(bundleIdentifier: bundleId, url: resolvedURL) else {
-                logger.info("URL resolution: no legacy rule matched for URL \(resolvedURL)")
+                logger.info("URL resolution: no profile rule matched for URL \(resolvedURL)")
                 return
             }
 
-            logger.info("URL resolution: matched legacy rule '\(refinedRule.profile.name)'")
+            logger.info("URL resolution: matched profile rule '\(refinedRule.profile.name)'")
             applyRuleMatch(refinedRule, activeApp: capturedActiveApp)
             refreshLiveStreamingIfParamsChanged()
         }
@@ -1399,9 +1403,17 @@ final class DictationViewModel: ObservableObject {
                     ruleName: self.effectiveRuleName,
                     selectedText: self.capturedSelectedText
                 )
-
+                let dictationContext = DictationRuntimeContext(
+                    engineId: result.engineUsed,
+                    modelId: modelManager.resolvedModelId(
+                        engineOverrideId: engineOverride,
+                        cloudModelOverride: cloudModelOverride
+                    ),
+                    configuredLanguage: language,
+                    detectedLanguage: result.detectedLanguage
+                )
                 let ppResult = try await postProcessingPipeline.process(
-                    text: text, context: ppContext, llmHandler: llmHandler,
+                    text: text, context: ppContext, dictationContext: dictationContext, llmHandler: llmHandler,
                     outputFormat: self.effectiveOutputFormat,
                     llmStepName: llmStepName
                 )
@@ -1443,7 +1455,8 @@ final class DictationViewModel: ObservableObject {
                     _ = try await textInsertionService.insertText(
                         insertionText,
                         preserveClipboard: preserveClipboard,
-                        autoEnter: self.effectiveAutoEnterEnabled
+                        autoEnter: self.effectiveAutoEnterEnabled,
+                        outputFormat: self.effectiveOutputFormat
                     )
                     EventBus.shared.emit(.textInserted(TextInsertedPayload(
                         text: text,
@@ -1721,6 +1734,18 @@ final class DictationViewModel: ObservableObject {
 
         let base: String
         switch match.kind {
+        case .appAndWebsite:
+            if let domain = match.matchedDomain {
+                base = localizedAppText(
+                    "This workflow applies because \(appDescriptor) was detected together with \(domain).",
+                    de: "Dieser Workflow greift, weil \(appDescriptor) zusammen mit \(domain) erkannt wurde."
+                )
+            } else {
+                base = localizedAppText(
+                    "This workflow applies because the app and website were detected together.",
+                    de: "Dieser Workflow greift, weil App und Website zusammen erkannt wurden."
+                )
+            }
         case .website:
             if let domain = match.matchedDomain {
                 base = localizedAppText(
@@ -1837,7 +1862,7 @@ final class DictationViewModel: ObservableObject {
     """
 
     /// Builds an LLM handler for the post-processing pipeline.
-    /// Priority: workflow > legacy inline/prompt action > translation > nil.
+    /// Priority: workflow > profile inline/prompt action > translation > nil.
     private func buildLLMHandler(
         translationTarget: String?,
         detectedLanguage: String?,

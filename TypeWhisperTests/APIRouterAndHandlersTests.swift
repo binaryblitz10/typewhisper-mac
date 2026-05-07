@@ -5,6 +5,20 @@ import XCTest
 import TypeWhisperPluginSDK
 @testable import TypeWhisper
 
+private func rtfAttributedStringContainsFontTrait(
+    _ trait: NSFontTraitMask,
+    in attributed: NSAttributedString,
+    matching text: String
+) -> Bool {
+    let range = (attributed.string as NSString).range(of: text)
+    guard range.location != NSNotFound else { return false }
+
+    var effectiveRange = NSRange(location: 0, length: 0)
+    let font = attributed.attribute(.font, at: range.location, effectiveRange: &effectiveRange) as? NSFont
+    guard let font else { return false }
+    return NSFontManager.shared.traits(of: font).contains(trait)
+}
+
 final class APIRouterAndHandlersTests: XCTestCase {
     @objc(APIRouterMockLLMProviderPlugin)
     private final class MockLLMProviderPlugin: NSObject, LLMProviderPlugin, LLMProviderSetupStatusProviding, LLMTemperatureControllableProvider, PluginSettingsActivityReporting, @unchecked Sendable {
@@ -208,6 +222,87 @@ final class APIRouterAndHandlersTests: XCTestCase {
             return PluginTranscriptionResult(
                 text: "transcribed",
                 detectedLanguage: languageSelection.requestedLanguage ?? languageSelection.languageHints.first
+            )
+        }
+    }
+
+    @objc(APIRouterStructuredTranscriptionPlugin)
+    private final class StructuredTranscriptionPlugin: NSObject, StructuredTranscriptionEnginePlugin, @unchecked Sendable {
+        static var pluginId: String { "com.typewhisper.mock.structured-transcription" }
+        static var pluginName: String { "Structured Mock Transcription" }
+
+        required override init() {}
+
+        func activate(host: HostServices) {}
+        func deactivate() {}
+
+        var providerId: String { "structured-mock" }
+        var providerDisplayName: String { "Structured Mock" }
+        var isConfigured: Bool { true }
+        var transcriptionModels: [PluginModelInfo] { [PluginModelInfo(id: "structured", displayName: "Structured")] }
+        var selectedModelId: String? { "structured" }
+        func selectModel(_ modelId: String) {}
+        var supportsTranslation: Bool { false }
+
+        func transcribe(audio: AudioData, language: String?, translate: Bool, prompt: String?) async throws -> PluginTranscriptionResult {
+            PluginTranscriptionResult(
+                text: "legacy text",
+                detectedLanguage: language,
+                segments: [
+                    PluginTranscriptionSegment(text: "legacy text", start: 0, end: 1)
+                ]
+            )
+        }
+
+        func transcribeStructured(audio: AudioData, language: String?, translate: Bool, prompt: String?) async throws -> PluginStructuredTranscriptionResult {
+            PluginStructuredTranscriptionResult(
+                text: "Speaker A: Hello\nSpeaker B: Hi",
+                detectedLanguage: language,
+                segments: [
+                    PluginStructuredTranscriptionSegment(
+                        text: "Hello",
+                        start: 0.0,
+                        end: 1.0,
+                        speakerLabel: "Speaker A",
+                        speakerConfidence: 0.9
+                    ),
+                    PluginStructuredTranscriptionSegment(
+                        text: "Hi",
+                        start: 1.0,
+                        end: 2.0,
+                        speakerLabel: "Speaker B",
+                        speakerConfidence: 0.82
+                    )
+                ]
+            )
+        }
+    }
+
+    @objc(APIRouterLegacySegmentTranscriptionPlugin)
+    private final class LegacySegmentTranscriptionPlugin: NSObject, TranscriptionEnginePlugin, @unchecked Sendable {
+        static var pluginId: String { "com.typewhisper.mock.legacy-segment-transcription" }
+        static var pluginName: String { "Legacy Segment Mock Transcription" }
+
+        required override init() {}
+
+        func activate(host: HostServices) {}
+        func deactivate() {}
+
+        var providerId: String { "legacy-segment-mock" }
+        var providerDisplayName: String { "Legacy Segment Mock" }
+        var isConfigured: Bool { true }
+        var transcriptionModels: [PluginModelInfo] { [PluginModelInfo(id: "legacy", displayName: "Legacy")] }
+        var selectedModelId: String? { "legacy" }
+        func selectModel(_ modelId: String) {}
+        var supportsTranslation: Bool { false }
+
+        func transcribe(audio: AudioData, language: String?, translate: Bool, prompt: String?) async throws -> PluginTranscriptionResult {
+            PluginTranscriptionResult(
+                text: "legacy segment",
+                detectedLanguage: language,
+                segments: [
+                    PluginTranscriptionSegment(text: "legacy segment", start: 0.0, end: 1.0)
+                ]
             )
         }
     }
@@ -890,6 +985,55 @@ final class APIRouterAndHandlersTests: XCTestCase {
         XCTAssertNil(MockTranscriptionPlugin.lastLanguageSelection.requestedLanguage)
     }
 
+    @MainActor
+    func testTranscribeEndpointVerboseJSONIncludesSpeakerWhenStructuredSegmentsAreReturned() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var context: APIContext?
+        defer {
+            context = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        context = Self.makeAPIContext(appSupportDirectory: appSupportDirectory)
+        let plugin = StructuredTranscriptionPlugin()
+        PluginManager.shared.loadedPlugins.append(
+            LoadedPlugin(
+                manifest: PluginManifest(
+                    id: "com.typewhisper.mock.structured-transcription",
+                    name: "Structured Mock Transcription",
+                    version: "1.0.0",
+                    principalClass: "APIRouterStructuredTranscriptionPlugin"
+                ),
+                instance: plugin,
+                bundle: Bundle.main,
+                sourceURL: appSupportDirectory,
+                isEnabled: true
+            )
+        )
+        context?.modelManager.selectProvider(plugin.providerId)
+
+        let router = try XCTUnwrap(context?.router)
+        let wavData = WavEncoder.encode(Array(repeating: Float(0), count: 1600))
+        let response = try Self.jsonObject(await router.route(
+            HTTPRequest(
+                method: "POST",
+                path: "/v1/transcribe",
+                queryParams: [:],
+                headers: [
+                    "content-type": "audio/wav",
+                    "x-response-format": "verbose_json",
+                ],
+                body: wavData
+            )
+        ))
+
+        let segments = try XCTUnwrap(response["segments"] as? [[String: Any]])
+        XCTAssertEqual(segments.count, 2)
+        XCTAssertEqual(segments[0]["text"] as? String, "Hello")
+        XCTAssertEqual(segments[0]["speaker"] as? String, "Speaker A")
+        XCTAssertEqual(segments[1]["speaker"] as? String, "Speaker B")
+    }
+
     func testTranscribeLocalFileEndpointTranscribesTemporaryWavFile() async throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
         let audioDirectory = try TestSupport.makeTemporaryDirectory()
@@ -1385,6 +1529,128 @@ final class APIRouterAndHandlersTests: XCTestCase {
     }
 
     @MainActor
+    func testRTFOutputWritesPlainTextFallbackAndRichTextData() async throws {
+        let service = TextInsertionService()
+        let pasteboard = NSPasteboard.withUniqueName()
+        service.accessibilityGrantedOverride = true
+        service.pasteboardProvider = { pasteboard }
+        service.pasteSimulatorOverride = {}
+
+        _ = try await service.insertText(
+            "Meeting\n- **Launch** plan\n- _Budget_ review",
+            outputFormat: "rtf"
+        )
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Meeting\n- Launch plan\n- Budget review")
+
+        let rtfData = try XCTUnwrap(pasteboard.data(forType: .rtf))
+        let attributed = try NSAttributedString(
+            data: rtfData,
+            options: [.documentType: NSAttributedString.DocumentType.rtf],
+            documentAttributes: nil
+        )
+
+        XCTAssertEqual(attributed.string, "Meeting\n\u{2022} Launch plan\n\u{2022} Budget review")
+        XCTAssertTrue(rtfAttributedStringContainsFontTrait(NSFontTraitMask.boldFontMask, in: attributed, matching: "Launch"))
+        XCTAssertTrue(rtfAttributedStringContainsFontTrait(NSFontTraitMask.italicFontMask, in: attributed, matching: "Budget"))
+    }
+
+    @MainActor
+    func testRTFOutputStripsLLMMarkdownFenceAndInputBoundaryMarkers() async throws {
+        let service = TextInsertionService()
+        let pasteboard = NSPasteboard.withUniqueName()
+        service.accessibilityGrantedOverride = true
+        service.pasteboardProvider = { pasteboard }
+        service.pasteSimulatorOverride = {}
+
+        let llmResponse = """
+        Here is the Markdown-compatible text for rich-text conversion:
+
+        ```markdown
+        BEGIN TYPEWHISPER DICTATED TEXT
+        - **Launch** plan
+        - _Budget_ review
+        END TYPEWHISPER DICTATED TEXT
+        ```
+        """
+
+        _ = try await service.insertText(llmResponse, outputFormat: "rtf")
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "- Launch plan\n- Budget review")
+
+        let rtfData = try XCTUnwrap(pasteboard.data(forType: .rtf))
+        let attributed = try NSAttributedString(
+            data: rtfData,
+            options: [.documentType: NSAttributedString.DocumentType.rtf],
+            documentAttributes: nil
+        )
+
+        XCTAssertEqual(attributed.string, "\u{2022} Launch plan\n\u{2022} Budget review")
+        XCTAssertFalse(attributed.string.contains("TYPEWHISPER"))
+        XCTAssertFalse(attributed.string.contains("```"))
+        XCTAssertTrue(rtfAttributedStringContainsFontTrait(NSFontTraitMask.boldFontMask, in: attributed, matching: "Launch"))
+        XCTAssertTrue(rtfAttributedStringContainsFontTrait(NSFontTraitMask.italicFontMask, in: attributed, matching: "Budget"))
+    }
+
+    @MainActor
+    func testRTFOutputUsesMarkdownParserForInlineSyntax() async throws {
+        let service = TextInsertionService()
+        let pasteboard = NSPasteboard.withUniqueName()
+        service.accessibilityGrantedOverride = true
+        service.pasteboardProvider = { pasteboard }
+        service.pasteSimulatorOverride = {}
+
+        _ = try await service.insertText(
+            "See [release notes](https://typewhisper.app) and `build 1.4`.",
+            outputFormat: "rtf"
+        )
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "See release notes and build 1.4.")
+
+        let rtfData = try XCTUnwrap(pasteboard.data(forType: .rtf))
+        let attributed = try NSAttributedString(
+            data: rtfData,
+            options: [.documentType: NSAttributedString.DocumentType.rtf],
+            documentAttributes: nil
+        )
+
+        XCTAssertEqual(attributed.string, "See release notes and build 1.4.")
+    }
+
+    @MainActor
+    func testRTFPreserveClipboardUsesPasteboardInsteadOfPlainAccessibilityInsertion() async throws {
+        let service = TextInsertionService()
+        let pasteboard = NSPasteboard.withUniqueName()
+        let element = AXUIElementCreateSystemWide()
+        service.accessibilityGrantedOverride = true
+        service.pasteboardProvider = { pasteboard }
+        service.focusedTextElementOverride = { element }
+        service.focusedTextStateOverride = { _ in
+            (value: "", selectedText: nil, selectedRange: NSRange(location: 0, length: 0))
+        }
+
+        var insertedText: String?
+        service.insertTextAtOverride = { _, text in
+            insertedText = text
+            return true
+        }
+
+        var didSimulatePaste = false
+        service.pasteSimulatorOverride = {
+            didSimulatePaste = true
+        }
+
+        pasteboard.clearContents()
+        pasteboard.setString("Existing", forType: .string)
+
+        _ = try await service.insertText("**Hello**", preserveClipboard: true, outputFormat: "rtf")
+
+        XCTAssertNil(insertedText)
+        XCTAssertTrue(didSimulatePaste)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Existing")
+    }
+
+    @MainActor
     func testApiStartRecording_startsAudioBeforeDeferredSelectedTextCapture() async throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
         var dictationContext: DictationContext?
@@ -1845,6 +2111,12 @@ final class APIRouterAndHandlersTests: XCTestCase {
         let promptActionService = PromptActionService(appSupportDirectory: appSupportDirectory)
         let promptProcessingService = PromptProcessingService()
         let appFormatterService = AppFormatterService()
+        let punctuationProfileStore = DictationPunctuationProfileStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            storageKey: UUID().uuidString
+        )
+        let punctuationRulesLoader = PunctuationRulesLoader()
+        let punctuationStrategyResolver = PunctuationStrategyResolver(profileStore: punctuationProfileStore)
         let speechFeedbackService = SpeechFeedbackService()
         let accessibilityAnnouncementService = AccessibilityAnnouncementService()
         let errorLogService = ErrorLogService(appSupportDirectory: appSupportDirectory)
@@ -1869,6 +2141,8 @@ final class APIRouterAndHandlersTests: XCTestCase {
             promptActionService: promptActionService,
             promptProcessingService: promptProcessingService,
             appFormatterService: appFormatterService,
+            punctuationStrategyResolver: punctuationStrategyResolver,
+            speechPunctuationService: SpeechPunctuationService(rulesLoader: punctuationRulesLoader),
             speechFeedbackService: speechFeedbackService,
             accessibilityAnnouncementService: accessibilityAnnouncementService,
             errorLogService: errorLogService,
@@ -2043,12 +2317,13 @@ final class APIRouterAndHandlersTests: XCTestCase {
         XCTAssertNotEqual(localizedAppLanguageName(for: "zh-Hans"), localizedAppLanguageName(for: "zh-Hant"))
     }
 
-    func testLocalizedAppLanguageFlagUsesDefaultsAndRegionOverrides() {
-        XCTAssertEqual(localizedAppLanguageFlag(for: "en"), "🇺🇸")
-        XCTAssertEqual(localizedAppLanguageFlag(for: "en-GB"), "🇬🇧")
-        XCTAssertEqual(localizedAppLanguageFlag(for: "en-US"), "🇺🇸")
-        XCTAssertEqual(localizedAppLanguageFlag(for: "zh"), "🇨🇳")
-        XCTAssertNil(localizedAppLanguageFlag(for: "zh-Hans"))
+    func testLocalizedAppLanguageBadgeDescriptorUsesNeutralLanguageCodes() {
+        XCTAssertEqual(localizedAppLanguageBadgeDescriptor(for: "en").text, "EN")
+        XCTAssertEqual(localizedAppLanguageBadgeDescriptor(for: "de").text, "DE")
+        XCTAssertEqual(localizedAppLanguageBadgeDescriptor(for: "en-GB").text, "EN-GB")
+        XCTAssertEqual(localizedAppLanguageBadgeDescriptor(for: "zh-Hans").text, "ZH-HANS")
+        XCTAssertEqual(localizedAppLanguageBadgeDescriptor(for: "multi").text, "MULTI")
+        XCTAssertEqual(localizedAppLanguageBadgeDescriptor(for: "en").accessibilityLabel, localizedAppLanguageName(for: "en"))
     }
 
     func testFeaturedAppLanguageRankPromotesCommonLanguages() {
@@ -2186,6 +2461,12 @@ final class APIRouterAndHandlersTests: XCTestCase {
         let promptActionService = PromptActionService(appSupportDirectory: appSupportDirectory)
         let promptProcessingService = PromptProcessingService()
         let appFormatterService = AppFormatterService()
+        let punctuationProfileStore = DictationPunctuationProfileStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            storageKey: UUID().uuidString
+        )
+        let punctuationRulesLoader = PunctuationRulesLoader()
+        let punctuationStrategyResolver = PunctuationStrategyResolver(profileStore: punctuationProfileStore)
         let speechFeedbackService = SpeechFeedbackService()
         let accessibilityAnnouncementService = AccessibilityAnnouncementService()
         let errorLogService = ErrorLogService(appSupportDirectory: appSupportDirectory)
@@ -2210,6 +2491,8 @@ final class APIRouterAndHandlersTests: XCTestCase {
             promptActionService: promptActionService,
             promptProcessingService: promptProcessingService,
             appFormatterService: appFormatterService,
+            punctuationStrategyResolver: punctuationStrategyResolver,
+            speechPunctuationService: SpeechPunctuationService(rulesLoader: punctuationRulesLoader),
             speechFeedbackService: speechFeedbackService,
             accessibilityAnnouncementService: accessibilityAnnouncementService,
             errorLogService: errorLogService,
@@ -2463,6 +2746,12 @@ final class APIRouterAndHandlersTests: XCTestCase {
         let promptActionService = PromptActionService(appSupportDirectory: appSupportDirectory)
         let promptProcessingService = PromptProcessingService()
         let appFormatterService = AppFormatterService()
+        let punctuationProfileStore = DictationPunctuationProfileStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!,
+            storageKey: UUID().uuidString
+        )
+        let punctuationRulesLoader = PunctuationRulesLoader()
+        let punctuationStrategyResolver = PunctuationStrategyResolver(profileStore: punctuationProfileStore)
         let speechFeedbackService = SpeechFeedbackService()
         let accessibilityAnnouncementService = AccessibilityAnnouncementService()
         let errorLogService = ErrorLogService(appSupportDirectory: appSupportDirectory)
@@ -2488,6 +2777,8 @@ final class APIRouterAndHandlersTests: XCTestCase {
             promptActionService: promptActionService,
             promptProcessingService: promptProcessingService,
             appFormatterService: appFormatterService,
+            punctuationStrategyResolver: punctuationStrategyResolver,
+            speechPunctuationService: SpeechPunctuationService(rulesLoader: punctuationRulesLoader),
             speechFeedbackService: speechFeedbackService,
             accessibilityAnnouncementService: accessibilityAnnouncementService,
             errorLogService: errorLogService,
@@ -3325,6 +3616,88 @@ final class APIRouterAndHandlersTests: XCTestCase {
         )
 
         XCTAssertEqual(plugin.selectedModelId, "alpha", "cloudModelOverride must not persist the plugin's default model")
+    }
+
+    @MainActor
+    func testModelManagerPreservesStructuredSpeakerSegmentsWhenPluginOptsIn() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        EventBus.shared = EventBus()
+        PluginManager.shared = PluginManager(appSupportDirectory: appSupportDirectory)
+
+        let plugin = StructuredTranscriptionPlugin()
+        PluginManager.shared.loadedPlugins = [
+            LoadedPlugin(
+                manifest: PluginManifest(
+                    id: "com.typewhisper.mock.structured-transcription",
+                    name: "Structured Mock Transcription",
+                    version: "1.0.0",
+                    principalClass: "APIRouterStructuredTranscriptionPlugin"
+                ),
+                instance: plugin,
+                bundle: Bundle.main,
+                sourceURL: appSupportDirectory,
+                isEnabled: true
+            )
+        ]
+
+        let modelManager = ModelManagerService()
+        modelManager.selectProvider(plugin.providerId)
+
+        let result = try await modelManager.transcribe(
+            audioSamples: [Float](repeating: 0, count: 16_000),
+            language: "en",
+            task: .transcribe,
+            engineOverrideId: nil,
+            cloudModelOverride: nil,
+            prompt: nil
+        )
+
+        XCTAssertEqual(result.text, "Speaker A: Hello\nSpeaker B: Hi")
+        XCTAssertEqual(result.segments.map(\.speakerLabel), ["Speaker A", "Speaker B"])
+        XCTAssertEqual(result.segments.first?.speakerConfidence, 0.9)
+    }
+
+    @MainActor
+    func testModelManagerKeepsLegacyTranscriptionSegmentsSpeakerless() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        EventBus.shared = EventBus()
+        PluginManager.shared = PluginManager(appSupportDirectory: appSupportDirectory)
+
+        let plugin = LegacySegmentTranscriptionPlugin()
+        PluginManager.shared.loadedPlugins = [
+            LoadedPlugin(
+                manifest: PluginManifest(
+                    id: "com.typewhisper.mock.legacy-segment-transcription",
+                    name: "Legacy Segment Mock Transcription",
+                    version: "1.0.0",
+                    principalClass: "APIRouterLegacySegmentTranscriptionPlugin"
+                ),
+                instance: plugin,
+                bundle: Bundle.main,
+                sourceURL: appSupportDirectory,
+                isEnabled: true
+            )
+        ]
+
+        let modelManager = ModelManagerService()
+        modelManager.selectProvider(plugin.providerId)
+
+        let result = try await modelManager.transcribe(
+            audioSamples: [Float](repeating: 0, count: 16_000),
+            language: "en",
+            task: .transcribe,
+            engineOverrideId: nil,
+            cloudModelOverride: nil,
+            prompt: nil
+        )
+
+        XCTAssertEqual(result.segments.map(\.text), ["legacy segment"])
+        XCTAssertNil(result.segments.first?.speakerLabel)
+        XCTAssertNil(result.segments.first?.speakerConfidence)
     }
 
     @MainActor
