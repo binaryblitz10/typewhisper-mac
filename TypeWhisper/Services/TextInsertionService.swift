@@ -932,6 +932,15 @@ final class TextInsertionService {
             return text
         }
 
+        // Newline boundary: inspect the raw end of leftContext directly.
+        // A trailing newline means a hard structural reset (new paragraph, list item, etc.).
+        // Preserve original transcription casing and skip all mid-sentence logic.
+        if let leftContext = context?.leftContext,
+           let last = leftContext.last,
+           last == "\n" || last == "\r" {
+            return text
+        }
+
         guard let firstCharIndex = text.firstIndex(where: { !$0.isWhitespace }) else {
             return text
         }
