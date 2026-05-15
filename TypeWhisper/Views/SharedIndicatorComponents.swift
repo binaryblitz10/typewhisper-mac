@@ -98,9 +98,7 @@ struct IndicatorLeftStatus: View {
         case .idle, .promptSelection, .promptProcessing:
             Color.clear.frame(width: 0, height: 0)
         case .recording:
-            if !viewModel.isRecordingInputReady {
-                IndicatorPreparingView(sizing: sizing)
-            } else if showActiveAppIcon, let icon = viewModel.activeAppIcon {
+            if showActiveAppIcon, let icon = viewModel.activeAppIcon {
                 IndicatorAppIconView(icon: icon, sizing: sizing)
             } else {
                 IndicatorDot(audioLevel: viewModel.audioLevel, dotPulse: dotPulse, sizing: sizing)
