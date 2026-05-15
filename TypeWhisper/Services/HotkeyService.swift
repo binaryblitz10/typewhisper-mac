@@ -1085,6 +1085,19 @@ final class HotkeyService: ObservableObject {
                 if fnDown, !state.fnWasDown {
                     state.fnWasDown = true
                     state.fnComboKeyPressed = false
+                    if hotkey.isDoubleTap {
+                        if state.tapCount == 1,
+                           let lastUp = state.lastTapUpTime,
+                           Date().timeIntervalSince(lastUp) < Self.doubleTapThreshold {
+                            state.tapCount = 2
+                            state.lastTapUpTime = nil
+                            return (true, false, true)
+                        } else {
+                            state.tapCount = 0
+                            state.lastTapUpTime = nil
+                            return (false, false, true)
+                        }
+                    }
                     return (true, false, true)
                 }
                 guard !fnDown, state.fnWasDown else {
@@ -1095,7 +1108,14 @@ final class HotkeyService: ObservableObject {
                 state.fnComboKeyPressed = false
                 if wasComboed { return (false, false, false) }
                 if hotkey.isDoubleTap {
-                    return (false, false, true)
+                    if state.tapCount == 2 {
+                        state.tapCount = 0
+                        return (false, true, true)
+                    } else {
+                        state.tapCount = 1
+                        state.lastTapUpTime = Date()
+                        return (false, false, true)
+                    }
                 }
                 return (false, true, true)
 
