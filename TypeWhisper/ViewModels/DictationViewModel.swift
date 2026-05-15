@@ -39,7 +39,6 @@ struct DictationSessionSnapshot: Sendable, Equatable {
 enum DictationLanguageResolver {
     static func resolve(
         workflow: Workflow?,
-        profile: Profile?,
         globalLanguageSelection: LanguageSelection
     ) -> LanguageSelection {
         if let workflow {
@@ -49,14 +48,25 @@ enum DictationLanguageResolver {
             }
         }
 
-        if let profile {
-            let profileSelection = profile.inputLanguageSelection
-            if profileSelection != .inheritGlobal {
-                return profileSelection
-            }
-        }
-
         return globalLanguageSelection
+    }
+}
+
+@MainActor
+enum DictationTranscriptionOverrideResolver {
+    static func engineId(for workflow: Workflow?) -> String? {
+        guard workflow?.template == .dictation else { return nil }
+        return trimmed(workflow?.behavior.transcriptionEngineId)
+    }
+
+    static func modelId(for workflow: Workflow?) -> String? {
+        guard engineId(for: workflow) != nil else { return nil }
+        return trimmed(workflow?.behavior.transcriptionModelId)
+    }
+
+    private static func trimmed(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 }
 
@@ -175,6 +185,7 @@ final class DictationViewModel: ObservableObject {
     @Published var activeRuleReasonLabel: String?
     @Published var activeRuleExplanation: String?
     @Published var processingPhase: String?
+    @Published private(set) var isRecordingInputReady = false
     @Published var actionFeedbackMessage: String?
     @Published var actionFeedbackIcon: String?
     @Published var actionFeedbackIsError: Bool = false
@@ -271,6 +282,10 @@ final class DictationViewModel: ObservableObject {
     private var isStopInFlight = false
     private var activeDictationSessionID: UUID?
     private var pendingPushToTalkDiscardMessage: String?
+    private var recordingStartCuePending = false
+    private var firstRecordingAudioBufferSeen = false
+    private var pendingRecordingStartedPayload: RecordingStartedPayload?
+    private var shouldPlayRecordingStartSoundWhenReady = false
     private var dictationSessions: [UUID: DictationSessionSnapshot] = [:]
     private var dictationSessionOrder: [UUID] = []
     private let maxTrackedDictationSessions = 100
@@ -417,6 +432,9 @@ final class DictationViewModel: ObservableObject {
         streamingHandler.onStreamingStateChange = { [weak self] streaming in
             self?.isStreaming = streaming
         }
+        audioRecordingService.onFirstRecordingAudioBuffer = { [weak self] in
+            self?.handleFirstRecordingAudioBuffer()
+        }
 
         promptPaletteHandler.onShowNotchFeedback = { [weak self] message, icon, duration, isError, category in
             self?.showNotchFeedback(message: message, icon: icon, duration: duration, isError: isError, errorCategory: category ?? "general")
@@ -523,6 +541,16 @@ final class DictationViewModel: ObservableObject {
         min(max(offset, 0), 8)
     }
 
+    nonisolated private static func elapsedMilliseconds(from start: UInt64, to end: UInt64) -> Double? {
+        guard end >= start else { return nil }
+        return Double(end - start) / 1_000_000
+    }
+
+    nonisolated private static func formatMilliseconds(_ value: Double?) -> String {
+        guard let value else { return "n/a" }
+        return String(format: "%.1f", value)
+    }
+
     var needsMicPermission: Bool {
         !audioRecordingService.hasMicrophonePermission
     }
@@ -539,7 +567,10 @@ final class DictationViewModel: ObservableObject {
 
     func apiStartRecording() -> UUID {
         let sessionID = UUID()
-        startRecording(sessionID: sessionID)
+        startRecording(
+            sessionID: sessionID,
+            requestUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+        )
         return sessionID
     }
 
@@ -610,6 +641,54 @@ final class DictationViewModel: ObservableObject {
         mediaPlaybackService.resumeIfWePaused()
     }
 
+    private func prepareRecordingStartCue(playsSound: Bool) {
+        isRecordingInputReady = false
+        recordingStartCuePending = true
+        firstRecordingAudioBufferSeen = false
+        pendingRecordingStartedPayload = nil
+        shouldPlayRecordingStartSoundWhenReady = playsSound
+    }
+
+    private func updateRecordingStartCuePayload(activeApp: (name: String?, bundleId: String?, url: String?)?) {
+        pendingRecordingStartedPayload = RecordingStartedPayload(
+            appName: activeApp?.name,
+            bundleIdentifier: activeApp?.bundleId
+        )
+        emitRecordingStartCueIfReady()
+    }
+
+    private func handleFirstRecordingAudioBuffer() {
+        firstRecordingAudioBufferSeen = true
+        emitRecordingStartCueIfReady()
+    }
+
+    private func emitRecordingStartCueIfReady() {
+        guard recordingStartCuePending,
+              firstRecordingAudioBufferSeen,
+              state == .recording,
+              let payload = pendingRecordingStartedPayload else {
+            return
+        }
+
+        recordingStartCuePending = false
+        isRecordingInputReady = true
+        if shouldPlayRecordingStartSoundWhenReady {
+            soundService.play(.recordingStarted, enabled: soundFeedbackEnabled)
+        }
+        accessibilityAnnouncementService.announceRecordingStarted()
+        EventBus.shared.emit(.recordingStarted(payload))
+    }
+
+    private func clearRecordingStartCueState(resetReadiness: Bool = true) {
+        if resetReadiness {
+            isRecordingInputReady = false
+        }
+        recordingStartCuePending = false
+        firstRecordingAudioBufferSeen = false
+        pendingRecordingStartedPayload = nil
+        shouldPlayRecordingStartSoundWhenReady = false
+    }
+
     private func clearDeferredRecordingContext() {
         metadataCaptureTask?.cancel()
         metadataCaptureTask = nil
@@ -618,13 +697,19 @@ final class DictationViewModel: ObservableObject {
         lastStreamingParams = nil
     }
 
-    private func abortActiveRecordingImmediately(sessionMessage: String) {
+    private func abortActiveRecordingImmediately(sessionMessage: String, preserveRecoveryAudio: Bool = false) {
+        clearRecordingStartCueState()
         clearDeferredRecordingContext()
         restoreRecordingSideEffects()
         streamingHandler.stop()
         stopRecordingTimer()
         Task {
             _ = await audioRecordingService.stopRecording(policy: .immediate)
+            if preserveRecoveryAudio {
+                audioRecordingService.preserveActiveRecoveryRecording()
+            } else {
+                audioRecordingService.discardActiveRecoveryRecording()
+            }
         }
         cancelActiveDictationSessionIfNeeded(message: sessionMessage)
         hotkeyService.cancelDictation()
@@ -642,20 +727,16 @@ final class DictationViewModel: ObservableObject {
     }
 
     private func setupBindings() {
-        hotkeyService.onDictationStart = { [weak self] in
-            self?.startRecording()
+        hotkeyService.onDictationStart = { [weak self] requestTimestamp in
+            self?.startRecording(requestUptimeNanoseconds: requestTimestamp)
         }
 
         hotkeyService.onDictationStop = { [weak self] in
             self?.stopDictation()
         }
 
-        hotkeyService.onProfileDictationStart = { [weak self] profileId in
-            self?.startRecording(forcedProfileId: profileId)
-        }
-
-        hotkeyService.onWorkflowDictationStart = { [weak self] workflowId in
-            self?.startRecording(forcedWorkflowId: workflowId)
+        hotkeyService.onWorkflowDictationStart = { [weak self] workflowId, requestTimestamp in
+            self?.startRecording(forcedWorkflowId: workflowId, requestUptimeNanoseconds: requestTimestamp)
         }
 
         hotkeyService.onWorkflowTextProcessing = { [weak self] workflowId in
@@ -670,16 +751,6 @@ final class DictationViewModel: ObservableObject {
         hotkeyService.onPushToTalkInterruption = { [weak self] in
             self?.handlePushToTalkInterruption()
         }
-
-        // Sync profile hotkeys whenever profiles change
-        // dropFirst: avoid early monitor setup during ServiceContainer.init() before app is ready
-        profileService.$profiles
-            .dropFirst()
-            .sink { [weak self] profiles in
-                guard let self else { return }
-                self.settingsHandler.syncProfileHotkeys(profiles)
-            }
-            .store(in: &cancellables)
 
         workflowService.$workflows
             .dropFirst()
@@ -712,7 +783,7 @@ final class DictationViewModel: ObservableObject {
                 defer { self.audioRecordingService.clearRecoveryError() }
                 guard self.state == .recording, !self.isStopInFlight else { return }
                 let errorMessage = error.localizedDescription
-                self.abortActiveRecordingImmediately(sessionMessage: errorMessage)
+                self.abortActiveRecordingImmediately(sessionMessage: errorMessage, preserveRecoveryAudio: true)
                 self.accessibilityAnnouncementService.announceError(errorMessage)
                 self.showError(errorMessage, category: "recording")
             }
@@ -893,18 +964,12 @@ final class DictationViewModel: ObservableObject {
     }
 
     private func startRecording(
-        forcedProfileId: UUID? = nil,
         forcedWorkflowId: UUID? = nil,
-        sessionID: UUID = UUID()
+        sessionID: UUID = UUID(),
+        requestUptimeNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
         let startTimestamp = CFAbsoluteTimeGetCurrent()
-
-        // Dismiss prompt palette if active
-        promptPaletteHandler.hide()
-        recentTranscriptionPaletteHandler.hide()
-
-        // Cancel auto-unload timer to prevent unloading during recording
-        modelManager.cancelAutoUnloadTimer()
+        clearRecordingStartCueState()
 
         // Cancel any pending transcription from a previous recording
         if transcriptionTask != nil {
@@ -921,7 +986,6 @@ final class DictationViewModel: ObservableObject {
         urlResolutionTask?.cancel()
         urlResolutionTask = nil
 
-        self.forcedProfileId = forcedProfileId
         self.forcedWorkflowId = forcedWorkflowId
         beginDictationSession(id: sessionID)
 
@@ -939,41 +1003,28 @@ final class DictationViewModel: ObservableObject {
             return
         }
 
-        // Match rule: forced manual override or app-based matching
-        let activeApp = textInsertionService.captureActiveApp()
-        capturedActiveApp = activeApp
-        capturedSelectedText = nil
-        let cursorContextEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.useSurroundingCursorContext)
-        capturedCursorContext = cursorContextEnabled
-            ? textInsertionService.captureSurroundingCursorContext()
-            : nil
-        activeAppIcon = nil
-
-        if let forcedWorkflowId,
-           let forcedWorkflow = workflowService.workflows.first(where: { $0.id == forcedWorkflowId && $0.isEnabled })
-        {
-            applyWorkflowMatch(workflowService.forcedWorkflowMatch(for: forcedWorkflow), activeApp: activeApp)
-        } else if let forcedProfileId,
-                  let forcedProfile = profileService.profiles.first(where: { $0.id == forcedProfileId && $0.isEnabled })
-        {
-            applyRuleMatch(profileService.forcedRuleMatch(for: forcedProfile), activeApp: activeApp)
-        } else if let workflowMatch = workflowService.matchWorkflow(bundleIdentifier: activeApp.bundleId, url: nil) {
-            applyWorkflowMatch(workflowMatch, activeApp: activeApp)
-        } else {
-            applyRuleMatch(profileService.matchRule(bundleIdentifier: activeApp.bundleId, url: nil), activeApp: activeApp)
-        }
-        let immediateContextMs = (CFAbsoluteTimeGetCurrent() - startTimestamp) * 1000
-
         do {
             audioRecordingService.selectedDeviceID = audioDeviceService.selectedDeviceID
             audioRecordingService.hasExplicitDeviceSelection = audioDeviceService.selectedDeviceUID != nil
             let selectedInputUsesBluetooth = audioDeviceService.selectedDeviceUsesBluetoothTransport
             audioRecordingService.selectedInputDeviceUsesBluetoothTransport = selectedInputUsesBluetooth
-            try audioRecordingService.startRecording()
+            prepareRecordingStartCue(playsSound: !selectedInputUsesBluetooth)
+            let audioStartTimestamp = DispatchTime.now().uptimeNanoseconds
+            try audioRecordingService.startRecording(requestUptimeNanoseconds: requestUptimeNanoseconds)
+            let audioStartCompletedTimestamp = DispatchTime.now().uptimeNanoseconds
+            let audioStartMs = Self.elapsedMilliseconds(
+                from: audioStartTimestamp,
+                to: audioStartCompletedTimestamp
+            )
+            let requestToAudioStartMs = Self.elapsedMilliseconds(
+                from: requestUptimeNanoseconds,
+                to: audioStartCompletedTimestamp
+            )
+            promptPaletteHandler.hide()
+            recentTranscriptionPaletteHandler.hide()
+            modelManager.cancelAutoUnloadTimer()
             if selectedInputUsesBluetooth {
                 logger.info("Skipping recording start sound for Bluetooth input device")
-            } else {
-                soundService.play(.recordingStarted, enabled: soundFeedbackEnabled)
             }
             if mediaPauseEnabled { mediaPlaybackService.pauseIfPlaying() }
             if audioDuckingEnabled {
@@ -985,27 +1036,49 @@ final class DictationViewModel: ObservableObject {
             // not from key press. Slow device init (e.g. iPhone Continuity ~2-3s)
             // would otherwise make the hold appear as "long press" → PTT stop.
             hotkeyService.resetKeyDownTime()
-            accessibilityAnnouncementService.announceRecordingStarted()
             partialText = ""
             isStopInFlight = false
             recordingStartTime = Date()
             startRecordingTimer()
+
+            let contextStartTimestamp = CFAbsoluteTimeGetCurrent()
+            // Match rule after the audio engine is live so app/context lookup does
+            // not delay capture of the user's first spoken words.
+            let activeApp = textInsertionService.captureActiveApp()
+            capturedActiveApp = activeApp
+            capturedSelectedText = nil
+            let cursorContextEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.useSurroundingCursorContext)
+            capturedCursorContext = cursorContextEnabled
+                ? textInsertionService.captureSurroundingCursorContext()
+                : nil
+            activeAppIcon = nil
+
+            if let forcedWorkflowId,
+               let forcedWorkflow = workflowService.workflows.first(where: { $0.id == forcedWorkflowId && $0.isEnabled }) {
+                applyWorkflowMatch(workflowService.forcedWorkflowMatch(for: forcedWorkflow), activeApp: activeApp)
+            } else if let forcedProfileId,
+                      let forcedProfile = profileService.profiles.first(where: { $0.id == forcedProfileId && $0.isEnabled }) {
+                applyRuleMatch(profileService.forcedRuleMatch(for: forcedProfile), activeApp: activeApp)
+            } else if let workflowMatch = workflowService.matchWorkflow(bundleIdentifier: activeApp.bundleId, url: nil) {
+                applyWorkflowMatch(workflowMatch, activeApp: activeApp)
+            } else {
+                applyRuleMatch(profileService.matchRule(bundleIdentifier: activeApp.bundleId, url: nil), activeApp: activeApp)
+            }
+            updateRecordingStartCuePayload(activeApp: activeApp)
+            let contextMs = (CFAbsoluteTimeGetCurrent() - contextStartTimestamp) * 1000
+
             startLiveStreaming(allowLiveTranscription: indicatorTranscriptPreviewEnabled || externalStreamingDisplayCount > 0)
-            EventBus.shared.emit(.recordingStarted(RecordingStartedPayload(
-                appName: capturedActiveApp?.name,
-                bundleIdentifier: capturedActiveApp?.bundleId
-            )))
             scheduleDeferredRecordingMetadataCapture(
                 activeApp: activeApp,
-                forcedProfileId: forcedProfileId,
                 forcedWorkflowId: forcedWorkflowId
             )
 
             let totalStartMs = (CFAbsoluteTimeGetCurrent() - startTimestamp) * 1000
             logger.info(
-                "Recording started: immediateContextMs=\(String(format: "%.1f", immediateContextMs), privacy: .public), totalStartMs=\(String(format: "%.1f", totalStartMs), privacy: .public)"
+                "Recording started: requestToAudioStartMs=\(Self.formatMilliseconds(requestToAudioStartMs), privacy: .public), audioStartMs=\(Self.formatMilliseconds(audioStartMs), privacy: .public), contextMs=\(String(format: "%.1f", contextMs), privacy: .public), totalStartMs=\(String(format: "%.1f", totalStartMs), privacy: .public)"
             )
         } catch {
+            clearRecordingStartCueState()
             clearDeferredRecordingContext()
             restoreRecordingSideEffects()
             let errorMessage: String
@@ -1030,7 +1103,6 @@ final class DictationViewModel: ObservableObject {
 
     private func scheduleDeferredRecordingMetadataCapture(
         activeApp: (name: String?, bundleId: String?, url: String?),
-        forcedProfileId: UUID?,
         forcedWorkflowId: UUID?
     ) {
         let metadataStartTimestamp = CFAbsoluteTimeGetCurrent()
@@ -1058,9 +1130,9 @@ final class DictationViewModel: ObservableObject {
         }
 
         // Resolve browser URL asynchronously after recording has already started.
-        // If a more specific URL rule matches, update the active rule on the fly.
-        // Skip URL resolution when a forced rule is set (manual rule shortcut overrides app matching).
-        guard forcedProfileId == nil, forcedWorkflowId == nil, let bundleId = activeApp.bundleId else { return }
+        // If a more specific URL workflow matches, update the active rule on the fly.
+        // Skip URL resolution when a forced workflow is set (manual shortcut overrides app matching).
+        guard forcedWorkflowId == nil, let bundleId = activeApp.bundleId else { return }
         urlResolutionTask = Task { [weak self] in
             guard let self else { return }
             logger.info("URL resolution: starting for bundleId=\(bundleId)")
@@ -1089,25 +1161,13 @@ final class DictationViewModel: ObservableObject {
                 return
             }
 
-            guard matchedWorkflow == nil else {
-                logger.info("URL resolution: keeping existing workflow match")
-                return
-            }
-            guard let refinedRule = profileService.matchRule(bundleIdentifier: bundleId, url: resolvedURL) else {
-                logger.info("URL resolution: no profile rule matched for URL \(resolvedURL)")
-                return
-            }
-
-            logger.info("URL resolution: matched profile rule '\(refinedRule.profile.name)'")
-            applyRuleMatch(refinedRule, activeApp: capturedActiveApp)
-            refreshLiveStreamingIfParamsChanged()
+            logger.info("URL resolution: no workflow matched for URL \(resolvedURL)")
         }
     }
 
     private var effectiveLanguageSelection: LanguageSelection {
         DictationLanguageResolver.resolve(
             workflow: matchedWorkflow,
-            profile: matchedProfile,
             globalLanguageSelection: settingsViewModel.languageSelection
         )
     }
@@ -1126,15 +1186,6 @@ final class DictationViewModel: ObservableObject {
     }
 
     private var effectiveTranslationTarget: String? {
-        // Per-profile translation override
-        if let profileEnabled = matchedProfile?.translationEnabled {
-            if !profileEnabled { return nil }
-            return matchedProfile?.translationTargetLanguage ?? settingsViewModel.translationTargetLanguage
-        }
-        // Existing behavior: profile target language override, then global setting
-        if let profileTarget = matchedProfile?.translationTargetLanguage {
-            return profileTarget
-        }
         if settingsViewModel.translationEnabled {
             return settingsViewModel.translationTargetLanguage
         }
@@ -1142,22 +1193,15 @@ final class DictationViewModel: ObservableObject {
     }
 
     private var effectiveEngineOverrideId: String? {
-        matchedProfile?.engineOverride
+        DictationTranscriptionOverrideResolver.engineId(for: matchedWorkflow)
     }
 
     private var effectiveCloudModelOverride: String? {
-        matchedProfile?.cloudModelOverride
+        DictationTranscriptionOverrideResolver.modelId(for: matchedWorkflow)
     }
 
     private var effectiveRuleName: String? {
-        matchedWorkflow?.name ?? matchedProfile?.name
-    }
-
-    private var effectivePromptAction: PromptAction? {
-        if let actionId = matchedProfile?.promptActionId {
-            return promptActionService.action(byId: actionId)
-        }
-        return nil
+        matchedWorkflow?.name
     }
 
     private var effectiveOutputFormat: String? {
@@ -1173,6 +1217,13 @@ final class DictationViewModel: ObservableObject {
             return matchedWorkflow.output.autoEnter
         }
         return matchedProfile?.autoEnterEnabled == true
+    }
+
+    private var effectivePromptAction: PromptAction? {
+        if let actionId = matchedProfile?.promptActionId {
+            return promptActionService.action(byId: actionId)
+        }
+        return nil
     }
 
     private var isMinimalCompactModeEnabled: Bool {
@@ -1196,6 +1247,7 @@ final class DictationViewModel: ObservableObject {
     private func finalizeStopDictation() async {
         let sessionID = activeDictationSessionID
 
+        clearRecordingStartCueState(resetReadiness: false)
         restoreRecordingSideEffects()
         if let discardMessage = pendingPushToTalkDiscardMessage {
             pendingPushToTalkDiscardMessage = nil
@@ -1203,6 +1255,7 @@ final class DictationViewModel: ObservableObject {
             lastStreamingParams = nil
             stopRecordingTimer()
             _ = await audioRecordingService.stopRecording(policy: .immediate)
+            audioRecordingService.discardActiveRecoveryRecording()
             if let sessionID {
                 failDictationSession(id: sessionID, error: discardMessage)
             }
@@ -1248,6 +1301,7 @@ final class DictationViewModel: ObservableObject {
 
         switch decision {
         case .discardTooShort:
+            audioRecordingService.discardActiveRecoveryRecording()
             let errorMessage = String(localized: "Too short, hold the hotkey a bit longer")
             if let sessionID {
                 failDictationSession(id: sessionID, error: errorMessage)
@@ -1259,6 +1313,7 @@ final class DictationViewModel: ObservableObject {
             )
             return
         case .discardNoSpeech:
+            audioRecordingService.discardActiveRecoveryRecording()
             logger.info("Peak level too low (\(String(format: "%.4f", peakLevel))) - no speech detected")
             let errorMessage = String(localized: "No speech detected")
             if let sessionID {
@@ -1331,6 +1386,7 @@ final class DictationViewModel: ObservableObject {
 
                 guard !text.isEmpty else {
                     logger.info("Transcription returned empty text (duration: \(String(format: "%.2f", result.duration))s, engine: \(result.engineUsed))")
+                    audioRecordingService.preserveActiveRecoveryRecording()
                     let errorMessage = String(localized: "No speech recognized")
                     if let sessionID {
                         failDictationSession(id: sessionID, error: errorMessage)
@@ -1380,7 +1436,7 @@ final class DictationViewModel: ObservableObject {
                     if self.matchedWorkflow != nil {
                         "Workflow"
                     } else {
-                        (self.effectivePromptAction != nil || self.matchedProfile?.inlineCommandsEnabled == true) ? "Prompt" : "Translation"
+                        "Translation"
                     }
                 } else {
                     nil
@@ -1500,6 +1556,7 @@ final class DictationViewModel: ObservableObject {
                     ruleName: self.effectiveRuleName
                 )))
 
+                audioRecordingService.discardActiveRecoveryRecording()
                 soundService.play(.transcriptionSuccess, enabled: soundFeedbackEnabled)
                 let wordCount = text.split(separator: " ").count
                 let detectedLang = result.detectedLanguage ?? language
@@ -1547,6 +1604,7 @@ final class DictationViewModel: ObservableObject {
                     : nil
                 let totalMs = (CFAbsoluteTimeGetCurrent() - pipelineStartTime) * 1000
                 logger.error("[ERROR] Pipeline failed after \(String(format: "%.0f", totalMs), privacy: .public) ms — \(error.localizedDescription, privacy: .public)")
+                audioRecordingService.preserveActiveRecoveryRecording()
                 EventBus.shared.emit(.transcriptionFailed(TranscriptionFailedPayload(
                     error: error.localizedDescription,
                     appName: capturedActiveApp?.name,
@@ -1569,25 +1627,16 @@ final class DictationViewModel: ObservableObject {
         }
     }
 
-    func requestMicPermission() {
-        settingsHandler.requestMicPermission()
-    }
-
-    func requestAccessibilityPermission() {
-        settingsHandler.requestAccessibilityPermission()
-    }
-
-    func setHotkey(_ hotkey: UnifiedHotkey, for slot: HotkeySlotType) {
-        settingsHandler.setHotkey(hotkey, for: slot)
-    }
-
-    func clearHotkey(for slot: HotkeySlotType) {
-        settingsHandler.clearHotkey(for: slot)
-    }
-
-    func isHotkeyAssigned(_ hotkey: UnifiedHotkey, excluding: HotkeySlotType) -> HotkeySlotType? {
-        settingsHandler.isHotkeyAssigned(hotkey, excluding: excluding)
-    }
+    func requestMicPermission() { settingsHandler.requestMicPermission() }
+    func requestAccessibilityPermission() { settingsHandler.requestAccessibilityPermission() }
+    func hotkeys(for slot: HotkeySlotType) -> [UnifiedHotkey] { settingsHandler.hotkeys(for: slot) }
+    func setHotkey(_ hotkey: UnifiedHotkey, for slot: HotkeySlotType) { settingsHandler.setHotkey(hotkey, for: slot) }
+    func addHotkey(_ hotkey: UnifiedHotkey, for slot: HotkeySlotType) { settingsHandler.addHotkey(hotkey, for: slot) }
+    func replaceHotkey(_ existingHotkey: UnifiedHotkey, with newHotkey: UnifiedHotkey, for slot: HotkeySlotType) { settingsHandler.replaceHotkey(existingHotkey, with: newHotkey, for: slot) }
+    func removeHotkey(_ hotkey: UnifiedHotkey, for slot: HotkeySlotType) { settingsHandler.removeHotkey(hotkey, for: slot) }
+    func removeConflictingHotkey(_ hotkey: UnifiedHotkey, for slot: HotkeySlotType) { settingsHandler.removeConflictingHotkey(hotkey, for: slot) }
+    func clearHotkey(for slot: HotkeySlotType) { settingsHandler.clearHotkey(for: slot) }
+    func isHotkeyAssigned(_ hotkey: UnifiedHotkey, excluding: HotkeySlotType) -> HotkeySlotType? { settingsHandler.isHotkeyAssigned(hotkey, excluding: excluding) }
 
     private static func loadHotkeyLabel(for slotType: HotkeySlotType) -> String {
         DictationSettingsHandler.loadHotkeyLabel(for: slotType)
@@ -1616,6 +1665,7 @@ final class DictationViewModel: ObservableObject {
         isStopInFlight = false
         activeDictationSessionID = nil
         pendingPushToTalkDiscardMessage = nil
+        clearRecordingStartCueState()
         clearRecordingCancelWarning()
         hotkeyService.deactivatePriorityEscCapture()
         state = .idle
@@ -1646,29 +1696,12 @@ final class DictationViewModel: ObservableObject {
     ) {
         activeWorkflowMatch = match
         matchedWorkflow = match?.workflow
-        matchedProfile = nil
-        activeRuleMatch = nil
-        forcedProfileId = nil
         activeRuleName = match?.workflow.name
         activeRuleReasonLabel = match?.kind.label
         activeRuleExplanation = match.map { workflowExplanation(for: $0, activeApp: activeApp) }
     }
 
-    private func applyRuleMatch(
-        _ match: RuleMatchResult?,
-        activeApp: (name: String?, bundleId: String?, url: String?)?
-    ) {
-        activeWorkflowMatch = nil
-        matchedWorkflow = nil
-        forcedWorkflowId = nil
-        activeRuleMatch = match
-        matchedProfile = match?.profile
-        activeRuleName = match?.profile.name
-        activeRuleReasonLabel = match?.kind.label
-        activeRuleExplanation = match.map { ruleExplanation(for: $0, activeApp: activeApp) }
-    }
-
-    /// Starts the live streaming handler with the currently effective profile params
+    /// Starts the live streaming handler with the currently effective workflow/global params
     /// and records a snapshot for later change detection (release review K3).
     private func startLiveStreaming(allowLiveTranscription: Bool) {
         let params = StreamingParamsSnapshot(
@@ -1726,60 +1759,18 @@ final class DictationViewModel: ObservableObject {
         activeRuleExplanation = nil
     }
 
-    private func workflowExplanation(
-        for match: WorkflowMatchResult,
+    private func applyRuleMatch(
+        _ match: RuleMatchResult?,
         activeApp: (name: String?, bundleId: String?, url: String?)?
-    ) -> String {
-        let appDescriptor = activeApp?.name ?? activeApp?.bundleId ?? "the active app"
-
-        let base: String
-        switch match.kind {
-        case .appAndWebsite:
-            if let domain = match.matchedDomain {
-                base = localizedAppText(
-                    "This workflow applies because \(appDescriptor) was detected together with \(domain).",
-                    de: "Dieser Workflow greift, weil \(appDescriptor) zusammen mit \(domain) erkannt wurde."
-                )
-            } else {
-                base = localizedAppText(
-                    "This workflow applies because the app and website were detected together.",
-                    de: "Dieser Workflow greift, weil App und Website zusammen erkannt wurden."
-                )
-            }
-        case .website:
-            if let domain = match.matchedDomain {
-                base = localizedAppText(
-                    "This workflow applies because \(domain) was detected.",
-                    de: "Dieser Workflow greift, weil \(domain) erkannt wurde."
-                )
-            } else {
-                base = localizedAppText(
-                    "This workflow applies because the current website was detected.",
-                    de: "Dieser Workflow greift, weil die aktuelle Website erkannt wurde."
-                )
-            }
-        case .app:
-            base = localizedAppText(
-                "This workflow applies because \(appDescriptor) was detected.",
-                de: "Dieser Workflow greift, weil \(appDescriptor) erkannt wurde."
-            )
-        case .globalFallback:
-            base = localizedAppText(
-                "This workflow applies because no more specific workflow matched.",
-                de: "Dieser Workflow greift, weil kein spezifischerer Workflow gepasst hat."
-            )
-        case .manualOverride:
-            base = localizedAppText(
-                "This workflow was manually triggered via its keyboard shortcut.",
-                de: "Dieser Workflow wurde manuell ueber seine Tastenkombination ausgeloest."
-            )
-        }
-
-        guard match.wonBySortOrder else { return base }
-        return base + localizedAppText(
-            " Among multiple matching workflows, the one higher in the list wins here.",
-            de: " Unter mehreren passenden Workflows gewinnt hier der weiter oben stehende Eintrag."
-        )
+    ) {
+        activeWorkflowMatch = nil
+        matchedWorkflow = nil
+        forcedWorkflowId = nil
+        activeRuleMatch = match
+        matchedProfile = match?.profile
+        activeRuleName = match?.profile.name
+        activeRuleReasonLabel = match?.kind.label
+        activeRuleExplanation = match.map { ruleExplanation(for: $0, activeApp: activeApp) }
     }
 
     private func ruleExplanation(
@@ -1838,6 +1829,62 @@ final class DictationViewModel: ObservableObject {
         )
     }
 
+    private func workflowExplanation(
+        for match: WorkflowMatchResult,
+        activeApp: (name: String?, bundleId: String?, url: String?)?
+    ) -> String {
+        let appDescriptor = activeApp?.name ?? activeApp?.bundleId ?? "the active app"
+
+        let base: String
+        switch match.kind {
+        case .appAndWebsite:
+            if let domain = match.matchedDomain {
+                base = localizedAppText(
+                    "This workflow applies because \(appDescriptor) was detected together with \(domain).",
+                    de: "Dieser Workflow greift, weil \(appDescriptor) zusammen mit \(domain) erkannt wurde."
+                )
+            } else {
+                base = localizedAppText(
+                    "This workflow applies because the app and website were detected together.",
+                    de: "Dieser Workflow greift, weil App und Website zusammen erkannt wurden."
+                )
+            }
+        case .website:
+            if let domain = match.matchedDomain {
+                base = localizedAppText(
+                    "This workflow applies because \(domain) was detected.",
+                    de: "Dieser Workflow greift, weil \(domain) erkannt wurde."
+                )
+            } else {
+                base = localizedAppText(
+                    "This workflow applies because the current website was detected.",
+                    de: "Dieser Workflow greift, weil die aktuelle Website erkannt wurde."
+                )
+            }
+        case .app:
+            base = localizedAppText(
+                "This workflow applies because \(appDescriptor) was detected.",
+                de: "Dieser Workflow greift, weil \(appDescriptor) erkannt wurde."
+            )
+        case .globalFallback:
+            base = localizedAppText(
+                "This workflow applies because no more specific workflow matched.",
+                de: "Dieser Workflow greift, weil kein spezifischerer Workflow gepasst hat."
+            )
+        case .manualOverride:
+            base = localizedAppText(
+                "This workflow was manually triggered via its keyboard shortcut.",
+                de: "Dieser Workflow wurde manuell ueber seine Tastenkombination ausgeloest."
+            )
+        }
+
+        guard match.wonBySortOrder else { return base }
+        return base + localizedAppText(
+            " Among multiple matching workflows, the one higher in the list wins here.",
+            de: " Unter mehreren passenden Workflows gewinnt hier der weiter oben stehende Eintrag."
+        )
+    }
+
     // MARK: - Shared Helpers
 
     private static func enhanceWithCursorContext(text: String, context: CursorContext) -> String {
@@ -1862,7 +1909,7 @@ final class DictationViewModel: ObservableObject {
     """
 
     /// Builds an LLM handler for the post-processing pipeline.
-    /// Priority: workflow > profile inline/prompt action > translation > nil.
+    /// Priority: workflow > translation > nil.
     private func buildLLMHandler(
         translationTarget: String?,
         detectedLanguage: String?,
@@ -2065,6 +2112,21 @@ final class DictationViewModel: ObservableObject {
     func readBackLastTranscription() {
         guard let text = lastTranscribedText else { return }
         speechFeedbackService.readBack(text: text, language: lastTranscriptionLanguage)
+    }
+
+    var canRecoverLastRecording: Bool {
+        audioRecordingService.latestRecoveryRecordingURL != nil
+    }
+
+    func recoverLastRecording(openSettingsWindow: Bool = true) {
+        guard audioRecordingService.latestRecoveryRecordingURL != nil else { return }
+
+        if let navigationCoordinator = SettingsNavigationCoordinator.shared {
+            navigationCoordinator.navigate(to: .dictationRecovery)
+        }
+        if openSettingsWindow {
+            ManagedAppWindowOpener.shared.open(id: "settings")
+        }
     }
 
     func triggerWorkflowPalette() {

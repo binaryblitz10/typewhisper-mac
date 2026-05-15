@@ -98,7 +98,9 @@ struct IndicatorLeftStatus: View {
         case .idle, .promptSelection, .promptProcessing:
             Color.clear.frame(width: 0, height: 0)
         case .recording:
-            if showActiveAppIcon, let icon = viewModel.activeAppIcon {
+            if !viewModel.isRecordingInputReady {
+                IndicatorPreparingView(sizing: sizing)
+            } else if showActiveAppIcon, let icon = viewModel.activeAppIcon {
                 IndicatorAppIconView(icon: icon, sizing: sizing)
             } else {
                 IndicatorDot(audioLevel: viewModel.audioLevel, dotPulse: dotPulse, sizing: sizing)
@@ -141,6 +143,20 @@ struct IndicatorLeftStatus: View {
     }
 }
 
+// MARK: - Preparing Indicator
+
+struct IndicatorPreparingView: View {
+    let sizing: IndicatorSizing
+
+    var body: some View {
+        ProgressView()
+            .controlSize(.mini)
+            .tint(.white)
+            .frame(width: max(sizing.iconSize, sizing.dotSize), height: max(sizing.iconSize, sizing.dotSize))
+            .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Recording Dot
 
 struct IndicatorDot: View {
@@ -169,7 +185,11 @@ struct IndicatorRecordingContent: View {
     var body: some View {
         switch content {
         case .indicator:
-            IndicatorDot(audioLevel: viewModel.audioLevel, dotPulse: dotPulse, sizing: sizing)
+            if viewModel.isRecordingInputReady {
+                IndicatorDot(audioLevel: viewModel.audioLevel, dotPulse: dotPulse, sizing: sizing)
+            } else {
+                IndicatorPreparingView(sizing: sizing)
+            }
         case .timer:
             Text(formatDuration(viewModel.recordingDuration))
                 .font(.system(size: sizing.timerFontSize, weight: .medium).monospacedDigit())
@@ -181,7 +201,7 @@ struct IndicatorRecordingContent: View {
         case .waveform:
             AudioWaveformView(
                 audioLevel: viewModel.audioLevel,
-                isSetup: viewModel.recordingDuration < 0.5 && viewModel.audioLevel < 0.05,
+                isSetup: !viewModel.isRecordingInputReady || (viewModel.recordingDuration < 0.5 && viewModel.audioLevel < 0.05),
                 compact: true
             )
         case .profile:
@@ -194,7 +214,6 @@ struct IndicatorRecordingContent: View {
                     .padding(.horizontal, sizing.profilePaddingH)
                     .padding(.vertical, sizing.profilePaddingV)
                     .frame(maxWidth: NotchIndicatorLayout.profileChipMaxWidth, alignment: .leading)
-                    .background(.white.opacity(0.2), in: Capsule())
                     .accessibilityLabel(localizedAppText("Active workflow", de: "Aktiver Workflow"))
                     .accessibilityValue(name)
             } else {

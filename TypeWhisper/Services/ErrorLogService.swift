@@ -55,6 +55,7 @@ private struct DiagnosticsReport: Encodable {
         let audioDuckingLevel: Double
         let mediaPauseEnabled: Bool
         let defaultOutput: AudioOutputInfo?
+        let inputDiagnostics: AudioInputDiagnosticsReport
     }
 
     struct PluginInfo: Encodable {
@@ -75,6 +76,7 @@ private struct DiagnosticsReport: Encodable {
         let historyRetentionDays: Int
         let saveAudioWithHistory: Bool
         let memoryEnabled: Bool
+        let memoryCaptureScope: String
         let appFormattingEnabled: Bool
         let soundFeedbackEnabled: Bool
         let spokenFeedbackEnabled: Bool
@@ -102,6 +104,7 @@ private struct DiagnosticsReport: Encodable {
         let message: String
     }
 
+    let schemaVersion: Int
     let exportedAt: Date
     let app: AppInfo
     let system: SystemInfo
@@ -162,6 +165,7 @@ final class ErrorLogService: ObservableObject {
         let outputSnapshot = CoreAudioOutputVolumeController().defaultOutputSnapshot()
 
         return DiagnosticsReport(
+            schemaVersion: 2,
             exportedAt: Date(),
             app: .init(
                 version: AppConstants.appVersion,
@@ -207,7 +211,8 @@ final class ErrorLogService: ObservableObject {
                         volume: $0.volume,
                         transportType: $0.transportType
                     )
-                }
+                },
+                inputDiagnostics: container.audioDeviceService.diagnosticsReport()
             ),
             plugins: pluginManager.loadedPlugins.map {
                 .init(
@@ -228,6 +233,7 @@ final class ErrorLogService: ObservableObject {
                 historyRetentionDays: defaults.integer(forKey: UserDefaultsKeys.historyRetentionDays),
                 saveAudioWithHistory: defaults.bool(forKey: UserDefaultsKeys.saveAudioWithHistory),
                 memoryEnabled: defaults.bool(forKey: UserDefaultsKeys.memoryEnabled),
+                memoryCaptureScope: MemoryCaptureScope.load(from: defaults).rawValue,
                 appFormattingEnabled: defaults.bool(forKey: UserDefaultsKeys.appFormattingEnabled),
                 soundFeedbackEnabled: defaults.object(forKey: UserDefaultsKeys.soundFeedbackEnabled) as? Bool ?? true,
                 spokenFeedbackEnabled: defaults.bool(forKey: UserDefaultsKeys.spokenFeedbackEnabled),

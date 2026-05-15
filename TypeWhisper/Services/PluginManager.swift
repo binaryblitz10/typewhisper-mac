@@ -150,8 +150,10 @@ struct LoadedPlugin: Identifiable {
         !(instance is UnloadedPluginPlaceholder)
     }
 
+    @MainActor
     var supportsSettingsWindow: Bool {
-        isRuntimeLoaded && instance.settingsView != nil
+        guard isRuntimeLoaded else { return false }
+        return instance.settingsView != nil
     }
 }
 
@@ -189,6 +191,7 @@ final class PluginManager: ObservableObject {
 
     @Published var loadedPlugins: [LoadedPlugin] = []
     @Published private(set) var incompatibleExternalBundles: [String: IncompatibleExternalBundle] = [:]
+    @Published private(set) var readinessRevision = 0
 
     let pluginsDirectory: URL
     private var ruleNamesProvider: @MainActor () -> [String] = { [] }
@@ -198,6 +201,13 @@ final class PluginManager: ObservableObject {
         loadedPlugins
             .filter { $0.isEnabled }
             .compactMap { $0.instance as? PostProcessorPlugin }
+            .sorted { $0.priority < $1.priority }
+    }
+
+    var fileJobAutomations: [FileJobAutomationPlugin] {
+        loadedPlugins
+            .filter { $0.isEnabled }
+            .compactMap { $0.instance as? FileJobAutomationPlugin }
             .sorted { $0.priority < $1.priority }
     }
 
@@ -634,7 +644,7 @@ final class PluginManager: ObservableObject {
 
     /// Notify observers that plugin state changed (e.g. a model was loaded/unloaded)
     func notifyPluginStateChanged() {
-        objectWillChange.send()
+        readinessRevision += 1
     }
 
     // MARK: - Dynamic Plugin Management

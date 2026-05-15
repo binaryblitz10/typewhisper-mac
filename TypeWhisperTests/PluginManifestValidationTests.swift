@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 import TypeWhisperPluginSDK
 @testable import TypeWhisper
@@ -58,9 +59,42 @@ final class PluginManifestValidationTests: XCTestCase {
         let data = try Data(contentsOf: manifestURL)
         let manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
 
+        XCTAssertEqual(manifest.minHostVersion, "1.4.0")
         XCTAssertEqual(manifest.hosting, .cloud)
         XCTAssertEqual(manifest.requiresAPIKey, false)
         XCTAssertEqual(manifest.resolvedHosting, .cloud)
+        XCTAssertEqual(manifest.resolvedCategoryIdentifiers, ["transcription", "llm", "tts"])
+    }
+
+    func testQwen3UnsupportedLanguageSelectionFallsBackToAuto() {
+        XCTAssertEqual(
+            LanguageSelection.exact("uk").normalizedForSupportedLanguages(Qwen3Plugin.qwenSupportedLanguageCodes),
+            .auto
+        )
+        XCTAssertEqual(
+            LanguageSelection.hints(["fr", "uk"]).normalizedForSupportedLanguages(Qwen3Plugin.qwenSupportedLanguageCodes),
+            .exact("fr")
+        )
+    }
+
+    @MainActor
+    func testNotifyPluginStateChangedIncrementsReadinessRevisionAndNotifiesObservers() throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let manager = PluginManager(appSupportDirectory: appSupportDirectory)
+        let initialRevision = manager.readinessRevision
+        let notification = expectation(description: "plugin manager publishes readiness change")
+
+        let cancellable = manager.objectWillChange.sink {
+            notification.fulfill()
+        }
+
+        manager.notifyPluginStateChanged()
+
+        XCTAssertEqual(manager.readinessRevision, initialRevision + 1)
+        wait(for: [notification], timeout: 1)
+        withExtendedLifetime(cancellable) {}
     }
 }
 
@@ -439,172 +473,6 @@ final class Gemma4PluginModelPolicyTests: XCTestCase {
         XCTAssertFalse(isValid)
     }
 
-    func testParakeetActivationLoadsStoredHuggingFaceToken() throws {
-        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
-        defer { TestSupport.remove(appSupportDirectory) }
-
-        let host = MockHostServices(
-            pluginDataDirectory: appSupportDirectory,
-            secrets: ["hf-token": "hf_parakeet_saved"]
-        )
-        let plugin = ParakeetPlugin()
-
-        plugin.activate(host: host)
-
-        XCTAssertEqual(plugin.huggingFaceToken, "hf_parakeet_saved")
-    }
-
-    func testParakeetDisablesTranscriptPreviewFallback() throws {
-        let fallbackPolicy: any TranscriptPreviewFallbackPolicyProviding = ParakeetPlugin()
-
-        XCTAssertFalse(fallbackPolicy.allowsTranscriptPreviewFallback)
-    }
-
-    func testParakeetDictionaryTermsSupportReflectsStoredBoostingPreference() throws {
-        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
-        defer { TestSupport.remove(appSupportDirectory) }
-
-        let defaultHost = MockHostServices(pluginDataDirectory: appSupportDirectory)
-        let defaultPlugin = ParakeetPlugin()
-        defaultPlugin.activate(host: defaultHost)
-        XCTAssertEqual(defaultPlugin.dictionaryTermsSupport, .requiresPluginSetting)
-
-        let enabledHost = MockHostServices(
-            pluginDataDirectory: appSupportDirectory,
-            defaults: ["vocabularyBoostingEnabled": true]
-        )
-        let enabledPlugin = ParakeetPlugin()
-        enabledPlugin.activate(host: enabledHost)
-        XCTAssertEqual(enabledPlugin.dictionaryTermsSupport, .supported)
-    }
-
-    func testParakeetEnablingVocabularyBoostingPersistsAndNotifiesCapabilityChange() throws {
-        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
-        defer { TestSupport.remove(appSupportDirectory) }
-
-        let host = MockHostServices(pluginDataDirectory: appSupportDirectory)
-        let plugin = ParakeetPlugin()
-        plugin.activate(host: host)
-
-        plugin.setBoostingEnabled(true)
-
-        XCTAssertEqual(host.userDefault(forKey: "vocabularyBoostingEnabled") as? Bool, true)
-        XCTAssertEqual(plugin.dictionaryTermsSupport, .supported)
-        XCTAssertEqual(host.capabilitiesChangedCount, 1)
-
-        plugin.setBoostingEnabled(true)
-
-        XCTAssertEqual(host.capabilitiesChangedCount, 1)
-    }
-
-    func testParakeetDisablingVocabularyBoostingPersistsClearsVocabularyAndHidesCtcActivity() throws {
-        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
-        defer { TestSupport.remove(appSupportDirectory) }
-
-        let host = MockHostServices(
-            pluginDataDirectory: appSupportDirectory,
-            defaults: ["vocabularyBoostingEnabled": true]
-        )
-        let plugin = ParakeetPlugin()
-        plugin.activate(host: host)
-        plugin.lastConfiguredPrompt = "TypeWhisper Madison"
-        plugin.lastBoostingTermCount = 2
-        plugin.ctcModelState = .downloading
-        XCTAssertEqual(plugin.currentSettingsActivity?.message, "Downloading vocabulary model")
-
-        plugin.setBoostingEnabled(false)
-
-        XCTAssertEqual(host.userDefault(forKey: "vocabularyBoostingEnabled") as? Bool, false)
-        XCTAssertEqual(plugin.dictionaryTermsSupport, .requiresPluginSetting)
-        XCTAssertNil(plugin.lastConfiguredPrompt)
-        XCTAssertEqual(plugin.lastBoostingTermCount, 0)
-        XCTAssertNil(plugin.currentSettingsActivity)
-        plugin.ctcModelState = .error("Vocabulary model failed")
-        XCTAssertNil(plugin.currentSettingsActivity)
-        XCTAssertEqual(host.capabilitiesChangedCount, 1)
-
-        plugin.setBoostingEnabled(false)
-
-        XCTAssertEqual(host.capabilitiesChangedCount, 1)
-    }
-
-    func testParakeetStoresAndClearsHuggingFaceTokenSecret() throws {
-        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
-        defer { TestSupport.remove(appSupportDirectory) }
-
-        let host = MockHostServices(pluginDataDirectory: appSupportDirectory)
-        let plugin = ParakeetPlugin()
-        plugin.activate(host: host)
-
-        plugin.setHuggingFaceToken("  hf_parakeet_saved  ")
-        XCTAssertEqual(plugin.huggingFaceToken, "hf_parakeet_saved")
-        XCTAssertEqual(host.loadSecret(key: "hf-token"), "hf_parakeet_saved")
-
-        plugin.clearHuggingFaceToken()
-        XCTAssertNil(plugin.huggingFaceToken)
-        XCTAssertEqual(host.loadSecret(key: "hf-token"), "")
-    }
-
-    func testParakeetValidatesHuggingFaceTokenAgainstWhoAmIEndpoint() async throws {
-        let plugin = ParakeetPlugin()
-        let requestRecorder = RequestRecorder()
-
-        let isValid = await plugin.validateHuggingFaceToken("hf_parakeet_test") { request in
-            await requestRecorder.set(request)
-            let response = HTTPURLResponse(
-                url: try XCTUnwrap(request.url),
-                statusCode: 200,
-                httpVersion: nil,
-                headerFields: nil
-            )!
-            let data = Data(#"{"name":"typewhisper","type":"user"}"#.utf8)
-            return (data, response)
-        }
-
-        XCTAssertTrue(isValid)
-        let maybeRequest = await requestRecorder.get()
-        let request = try XCTUnwrap(maybeRequest)
-        XCTAssertEqual(request.url?.absoluteString, "https://huggingface.co/api/whoami-v2")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer hf_parakeet_test")
-        XCTAssertEqual(request.httpMethod, "GET")
-    }
-
-    func testParakeetAppliesStoredHuggingFaceTokenToEnvironment() throws {
-        let envKeys = [
-            "HF_TOKEN",
-            "HUGGING_FACE_HUB_TOKEN",
-            "HUGGINGFACEHUB_API_TOKEN",
-        ]
-        let originalTokens = Dictionary(
-            uniqueKeysWithValues: envKeys.map { key in
-                (key, getenv(key).map { String(cString: $0) })
-            }
-        )
-        defer {
-            for key in envKeys {
-                if let originalToken = originalTokens[key] ?? nil {
-                    setenv(key, originalToken, 1)
-                } else {
-                    unsetenv(key)
-                }
-            }
-        }
-
-        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
-        defer { TestSupport.remove(appSupportDirectory) }
-
-        let host = MockHostServices(pluginDataDirectory: appSupportDirectory)
-        let plugin = ParakeetPlugin()
-        plugin.activate(host: host)
-        plugin.setHuggingFaceToken("hf_env_parakeet")
-
-        plugin.applyHuggingFaceTokenToEnvironment()
-
-        for key in envKeys {
-            XCTAssertEqual(getenv(key).map { String(cString: $0) }, "hf_env_parakeet")
-        }
-    }
-
     func testWhisperKitValidatesHuggingFaceTokenAgainstWhoAmIEndpoint() async throws {
         let plugin = WhisperKitPlugin()
         let requestRecorder = RequestRecorder()
@@ -882,21 +750,24 @@ final class PluginManagerLoadOrderTests: XCTestCase {
 }
 
 final class Qwen3PluginContextFormattingTests: XCTestCase {
-    func testQwen3ContextFormatterReturnsEmptyStringForNilPrompt() throws {
-        XCTAssertEqual(Qwen3ContextBiasFormatter.format(prompt: nil), "")
+    func testQwen3ContextFormatterIncludesBaseInstructionWithoutPrompt() throws {
+        XCTAssertEqual(
+            Qwen3ContextBiasFormatter.format(prompt: nil),
+            Qwen3ContextBiasFormatter.baseInstruction
+        )
     }
 
     func testQwen3ContextFormatterWrapsSingleTerm() throws {
         XCTAssertEqual(
             Qwen3ContextBiasFormatter.format(prompt: "Qwen3"),
-            "Technical terms: Qwen3."
+            "\(Qwen3ContextBiasFormatter.baseInstruction)\nTechnical terms: Qwen3."
         )
     }
 
     func testQwen3ContextFormatterWrapsMultipleTermsAsCommaSeparatedSentence() throws {
         XCTAssertEqual(
             Qwen3ContextBiasFormatter.format(prompt: "Qwen3, MLX, LoRA"),
-            "Technical terms: Qwen3, MLX, LoRA."
+            "\(Qwen3ContextBiasFormatter.baseInstruction)\nTechnical terms: Qwen3, MLX, LoRA."
         )
     }
 
@@ -904,7 +775,7 @@ final class Qwen3PluginContextFormattingTests: XCTestCase {
         let prompt = PluginDictionaryTerms.prompt(from: [" Kubernetes ", "MLX", "mlx", "TypeWhisper"])
         XCTAssertEqual(
             Qwen3ContextBiasFormatter.format(prompt: prompt),
-            "Technical terms: Kubernetes, MLX, TypeWhisper."
+            "\(Qwen3ContextBiasFormatter.baseInstruction)\nTechnical terms: Kubernetes, MLX, TypeWhisper."
         )
     }
 }
@@ -925,6 +796,36 @@ final class PluginArchitectureCompatibilityTests: XCTestCase {
         var transcriptionModels: [PluginModelInfo] { [] }
         var selectedModelId: String? { nil }
         func selectModel(_ modelId: String) {}
+        func transcribe(audio: AudioData, language: String?, translate: Bool, prompt: String?) async throws -> PluginTranscriptionResult {
+            PluginTranscriptionResult(text: "ok", detectedLanguage: language)
+        }
+    }
+
+    private final class MockRoleGatedTranscriptionPlugin: NSObject, TranscriptionEnginePlugin, PluginAuthRoleStatusProviding, @unchecked Sendable {
+        static var pluginId: String { "com.typewhisper.mock.role-gated" }
+        static var pluginName: String { "Mock Role Gated" }
+
+        func activate(host: HostServices) {}
+        func deactivate() {}
+        var providerId: String { "mock-role-gated" }
+        var providerDisplayName: String { "Mock Role Gated" }
+        var isConfigured: Bool { true }
+        var supportsTranslation: Bool { false }
+        var supportedLanguages: [String] { ["en"] }
+        var transcriptionModels: [PluginModelInfo] { [] }
+        var selectedModelId: String? { nil }
+        func selectModel(_ modelId: String) {}
+
+        func authStatus(for role: PluginAuthRole) -> PluginAuthRoleStatus {
+            role == .transcription
+                ? PluginAuthRoleStatus(
+                    isAvailable: false,
+                    unavailableReason: "Transcription needs a separate credential.",
+                    requiredCredentialLabel: "API key"
+                )
+                : .available
+        }
+
         func transcribe(audio: AudioData, language: String?, translate: Bool, prompt: String?) async throws -> PluginTranscriptionResult {
             PluginTranscriptionResult(text: "ok", detectedLanguage: language)
         }
@@ -1110,6 +1011,55 @@ final class PluginArchitectureCompatibilityTests: XCTestCase {
 
         PluginManager.shared = PluginManager(appSupportDirectory: appSupportDirectory)
         PluginManager.shared.loadedPlugins = [
+            LoadedPlugin(
+                manifest: PluginManifest(
+                    id: "com.typewhisper.mock.compatible",
+                    name: "Mock Compatible",
+                    version: "1.0.0",
+                    principalClass: "MockTranscriptionPlugin"
+                ),
+                instance: MockTranscriptionPlugin(),
+                bundle: Bundle.main,
+                sourceURL: appSupportDirectory,
+                isEnabled: true
+            )
+        ]
+
+        let modelManager = ModelManagerService()
+        modelManager.restoreProviderSelection()
+
+        XCTAssertEqual(modelManager.selectedProviderId, "mock-compatible")
+    }
+
+    func testModelManagerFallsBackWhenStoredProviderCannotUseTranscriptionRole() throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let selectedEngineKey = UserDefaultsKeys.selectedEngine
+        let originalSelection = UserDefaults.standard.object(forKey: selectedEngineKey)
+        UserDefaults.standard.set("mock-role-gated", forKey: selectedEngineKey)
+        defer {
+            if let originalSelection {
+                UserDefaults.standard.set(originalSelection, forKey: selectedEngineKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: selectedEngineKey)
+            }
+        }
+
+        PluginManager.shared = PluginManager(appSupportDirectory: appSupportDirectory)
+        PluginManager.shared.loadedPlugins = [
+            LoadedPlugin(
+                manifest: PluginManifest(
+                    id: "com.typewhisper.mock.role-gated",
+                    name: "Mock Role Gated",
+                    version: "1.0.0",
+                    principalClass: "MockRoleGatedTranscriptionPlugin"
+                ),
+                instance: MockRoleGatedTranscriptionPlugin(),
+                bundle: Bundle.main,
+                sourceURL: appSupportDirectory,
+                isEnabled: true
+            ),
             LoadedPlugin(
                 manifest: PluginManifest(
                     id: "com.typewhisper.mock.compatible",

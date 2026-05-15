@@ -96,6 +96,27 @@ private final class MockTranscriptionPlugin: NSObject, TranscriptionEnginePlugin
     }
 }
 
+@objc(MockAuthRoleStatusPlugin)
+private final class MockAuthRoleStatusPlugin: NSObject, TypeWhisperPlugin, PluginAuthRoleStatusProviding, @unchecked Sendable {
+    static let pluginId = "com.typewhisper.mock.auth-roles"
+    static let pluginName = "Mock Auth Roles"
+
+    required override init() {}
+
+    func activate(host: HostServices) {}
+    func deactivate() {}
+
+    func authStatus(for role: PluginAuthRole) -> PluginAuthRoleStatus {
+        role == .transcription
+            ? PluginAuthRoleStatus(
+                isAvailable: false,
+                unavailableReason: "Transcription needs a key.",
+                requiredCredentialLabel: "API key"
+            )
+            : .available
+    }
+}
+
 @objc(MockDictionaryTermsPlugin)
 private final class MockDictionaryTermsPlugin: NSObject, TranscriptionEnginePlugin, DictionaryTermsCapabilityProviding, @unchecked Sendable {
     static let pluginId = "com.typewhisper.mock.dictionary-terms"
@@ -260,6 +281,34 @@ private final class MockTTSPlugin: NSObject, TTSProviderPlugin, @unchecked Senda
 }
 
 final class ProtocolContractTests: XCTestCase {
+    func testPluginAuthRolesExposeStableRawValues() {
+        XCTAssertEqual(PluginAuthRole.transcription.rawValue, "transcription")
+        XCTAssertEqual(PluginAuthRole.llm.rawValue, "llm")
+        XCTAssertEqual(PluginAuthRole.tts.rawValue, "tts")
+    }
+
+    func testPluginAuthRoleStatusResolverUsesProviderOverrideAndLegacyFallback() {
+        let roleAwarePlugin = MockAuthRoleStatusPlugin()
+        let roleStatus = PluginAuthRoleStatusResolver.status(
+            for: roleAwarePlugin,
+            role: .transcription,
+            legacyIsConfigured: true
+        )
+
+        XCTAssertFalse(roleStatus.isAvailable)
+        XCTAssertEqual(roleStatus.unavailableReason, "Transcription needs a key.")
+        XCTAssertEqual(roleStatus.requiredCredentialLabel, "API key")
+
+        let legacyPlugin = MockTranscriptionPlugin()
+        XCTAssertEqual(
+            PluginAuthRoleStatusResolver.status(for: legacyPlugin, role: .transcription, legacyIsConfigured: true),
+            .available
+        )
+        XCTAssertFalse(
+            PluginAuthRoleStatusResolver.status(for: legacyPlugin, role: .transcription, legacyIsConfigured: false).isAvailable
+        )
+    }
+
     func testHostServicesExposeRulesSecretsAndDefaults() throws {
         let host = MockHostServices(eventBus: MockEventBus(), availableRuleNames: ["Work", "Docs"])
 
@@ -302,6 +351,8 @@ final class ProtocolContractTests: XCTestCase {
                 fineTuning: "Keep speaker intent.",
                 providerId: "openai",
                 cloudModel: "gpt-5.4",
+                transcriptionEngineId: "whisperkit",
+                transcriptionModelId: "large-v3",
                 temperatureMode: .custom,
                 temperatureValue: 0.2
             ),
@@ -322,7 +373,28 @@ final class ProtocolContractTests: XCTestCase {
         XCTAssertEqual(host.availableWorkflows, [workflow])
         XCTAssertEqual(host.availableWorkflows.first?.trigger.websitePatterns, ["example.com"])
         XCTAssertEqual(host.availableWorkflows.first?.behavior.settings["triggerWord"], "cleanup")
+        XCTAssertEqual(host.availableWorkflows.first?.behavior.transcriptionEngineId, "whisperkit")
+        XCTAssertEqual(host.availableWorkflows.first?.behavior.transcriptionModelId, "large-v3")
         XCTAssertEqual(host.availableWorkflows.first?.output.targetActionPluginId, "com.example.action")
+    }
+
+    func testWorkflowBehaviorDecodesLegacyPayloadWithoutTranscriptionOverrides() throws {
+        let payload: [String: Any] = [
+            "settings": ["triggerWord": "cleanup"],
+            "fineTuning": "Keep speaker intent.",
+            "providerId": "openai",
+            "cloudModel": "gpt-5.4",
+            "temperatureMode": "custom",
+            "temperatureValue": 0.2
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+
+        let behavior = try JSONDecoder().decode(PluginWorkflowBehavior.self, from: data)
+
+        XCTAssertEqual(behavior.providerId, "openai")
+        XCTAssertEqual(behavior.cloudModel, "gpt-5.4")
+        XCTAssertNil(behavior.transcriptionEngineId)
+        XCTAssertNil(behavior.transcriptionModelId)
     }
 
     func testTranscriptionPluginUsesDefaultStreamingFallback() async throws {
@@ -343,7 +415,8 @@ final class ProtocolContractTests: XCTestCase {
 
         XCTAssertEqual(result.text, "transcribed")
         XCTAssertEqual(plugin.host?.availableRuleNames, ["Work"])
-        XCTAssertNil(plugin.settingsView)
+        let hasSettingsView = await MainActor.run { plugin.settingsView != nil }
+        XCTAssertFalse(hasSettingsView)
 
         plugin.deactivate()
         XCTAssertNil(plugin.host)
@@ -408,6 +481,47 @@ final class ProtocolContractTests: XCTestCase {
         XCTAssertEqual(result.segments.first?.text, "Hello")
         XCTAssertEqual(result.segments.first?.speakerLabel, "Speaker A")
         XCTAssertEqual(result.segments.first?.speakerConfidence, 0.91)
+    }
+
+    func testFileJobAutomationContextCarriesWatchFolderExportMetadata() throws {
+        let segment = FileJobTranscriptSegment(
+            text: "Hello",
+            start: 0.25,
+            end: 1.5,
+            speakerLabel: "Speaker A",
+            speakerConfidence: 0.91
+        )
+        let context = FileJobContext(
+            jobKind: .watchFolder,
+            sourceFilePath: "/tmp/in/meeting.wav",
+            outputDirectoryPath: "/tmp/out",
+            outputFilePath: "/tmp/out/meeting.srt",
+            outputFormat: "srt",
+            engineId: "whisperkit",
+            engineName: "WhisperKit",
+            modelId: "large-v3",
+            transcriptText: "Speaker A: Hello",
+            detectedLanguage: "en",
+            segments: [segment]
+        )
+        let artifact = FileJobArtifact(fileExtension: "srt", content: "1\n00:00:00,250 --> 00:00:01,500\nHello")
+        let result = FileJobAutomationResult(
+            artifact: artifact,
+            appliedSteps: ["File Job Script"],
+            outputPathWasWritten: true
+        )
+
+        XCTAssertEqual(FileJobKind.watchFolder.rawValue, "watch-folder")
+        XCTAssertEqual(context.sourceFileName, "meeting.wav")
+        XCTAssertEqual(context.outputFormat, "srt")
+        XCTAssertEqual(context.segments, [segment])
+        XCTAssertEqual(result.artifact, artifact)
+        XCTAssertEqual(result.appliedSteps, ["File Job Script"])
+        XCTAssertTrue(result.outputPathWasWritten)
+
+        let encoded = try JSONEncoder().encode(context)
+        let decoded = try JSONDecoder().decode(FileJobContext.self, from: encoded)
+        XCTAssertEqual(decoded, context)
     }
 
     func testTTSPluginCanPersistVoiceAndReceiveSpeakRequest() async throws {

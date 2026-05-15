@@ -25,7 +25,7 @@ final class PluginSettingsWindowManager {
             defer: false
         )
         let hostingView = NSHostingView(
-            rootView: settingsView
+            rootView: PluginSettingsWindowContent(settingsView: settingsView)
                 .environment(\.pluginSettingsClose, { [weak window] in
                     window?.close()
                 })
@@ -52,6 +52,18 @@ final class PluginSettingsWindowManager {
         window.delegate = delegate
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+private struct PluginSettingsWindowContent: View {
+    let settingsView: AnyView
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            settingsView
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -318,6 +330,7 @@ struct PluginSettingsView: View {
         if plugin.instance is any TTSProviderPlugin { categories.append(.tts) }
         if plugin.instance is any LLMProviderPlugin { categories.append(.llm) }
         if plugin.instance is any PostProcessorPlugin { categories.append(.postProcessor) }
+        if plugin.instance is any FileJobAutomationPlugin { categories.append(.fileAutomation) }
         if plugin.instance is any ActionPlugin { categories.append(.action) }
         if plugin.instance is any MemoryStoragePlugin { categories.append(.memory) }
         return categories
@@ -883,6 +896,7 @@ private extension PluginCategory {
         case .tts: String(localized: "TTS")
         case .llm: String(localized: "LLM")
         case .postProcessor: String(localized: "Post-processing")
+        case .fileAutomation: String(localized: "File automation")
         case .action: String(localized: "Actions")
         case .memory: String(localized: "Memory")
         case .utility: String(localized: "Utility")

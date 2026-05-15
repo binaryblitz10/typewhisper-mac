@@ -515,6 +515,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
         let modelManager: ModelManagerService
         let historyService: HistoryService
         let profileService: ProfileService
+        let workflowService: WorkflowService
         let dictionaryService: DictionaryService
         let dictationViewModel: DictationViewModel
         let audioRecordingService: AudioRecordingService
@@ -527,6 +528,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
             modelManager: ModelManagerService,
             historyService: HistoryService,
             profileService: ProfileService,
+            workflowService: WorkflowService,
             dictionaryService: DictionaryService,
             dictationViewModel: DictationViewModel,
             audioRecordingService: AudioRecordingService,
@@ -538,6 +540,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
             self.modelManager = modelManager
             self.historyService = historyService
             self.profileService = profileService
+            self.workflowService = workflowService
             self.dictionaryService = dictionaryService
             self.dictationViewModel = dictationViewModel
             self.audioRecordingService = audioRecordingService
@@ -693,8 +696,77 @@ final class APIRouterAndHandlersTests: XCTestCase {
             HTTPRequest(method: "GET", path: "/missing", queryParams: [:], headers: [:], body: Data())
         )
 
-        XCTAssertEqual(optionsResponse.status, 200)
+        XCTAssertEqual(optionsResponse.status, 204)
         XCTAssertEqual(notFoundResponse.status, 404)
+    }
+
+    func testRouterRequiresAPITokenForRegisteredRoutes() async throws {
+        let router = APIRouter(apiTokenProvider: { "test-token" })
+        router.register("GET", "/v1/status") { _ in
+            .json(["status": "ready"])
+        }
+        router.register("GET", "/v1/models") { _ in
+            .json(["ok": true])
+        }
+
+        let publicStatus = await router.route(
+            HTTPRequest(method: "GET", path: "/v1/status", queryParams: [:], headers: [:], body: Data())
+        )
+        let missingToken = await router.route(
+            HTTPRequest(method: "GET", path: "/v1/models", queryParams: [:], headers: [:], body: Data())
+        )
+        let badToken = await router.route(
+            HTTPRequest(
+                method: "GET",
+                path: "/v1/models",
+                queryParams: [:],
+                headers: ["authorization": "Bearer wrong-token"],
+                body: Data()
+            )
+        )
+        let goodBearerToken = await router.route(
+            HTTPRequest(
+                method: "GET",
+                path: "/v1/models",
+                queryParams: [:],
+                headers: ["authorization": "Bearer test-token"],
+                body: Data()
+            )
+        )
+        let goodHeaderToken = await router.route(
+            HTTPRequest(
+                method: "GET",
+                path: "/v1/models",
+                queryParams: [:],
+                headers: ["x-typewhisper-api-token": "test-token"],
+                body: Data()
+            )
+        )
+
+        XCTAssertEqual(publicStatus.status, 200)
+        XCTAssertEqual(missingToken.status, 401)
+        XCTAssertEqual(badToken.status, 401)
+        XCTAssertEqual(goodBearerToken.status, 200)
+        XCTAssertEqual(goodHeaderToken.status, 200)
+    }
+
+    func testLocalAPIAuthenticatorEnforcesTokenOnlyWhenEnabled() {
+        let authenticator = LocalAPIAuthenticator(initialToken: "test-token", requiresAuthentication: false)
+
+        XCTAssertNil(authenticator.tokenForEnforcedRequests())
+
+        authenticator.setRequiresAuthentication(true)
+        XCTAssertEqual(authenticator.tokenForEnforcedRequests(), "test-token")
+
+        authenticator.setRequiresAuthentication(false)
+        XCTAssertNil(authenticator.tokenForEnforcedRequests())
+    }
+
+    func testSerializedResponseOmitsWildcardCORSHeaders() {
+        let responseText = String(decoding: HTTPResponse.json(["ok": true]).serialized(), as: UTF8.self)
+
+        XCTAssertFalse(responseText.contains("Access-Control-Allow-Origin: *"))
+        XCTAssertFalse(responseText.contains("Access-Control-Allow-Headers: Content-Type"))
     }
 
     func testAPIHandlersExposeStatusHistoryAndRules() async throws {
@@ -717,10 +789,19 @@ final class APIRouterAndHandlersTests: XCTestCase {
                 engineUsed: "parakeet"
             )
             context.profileService.addProfile(
-                name: "Docs",
+                name: "Legacy Docs",
                 urlPatterns: ["docs.github.com"],
                 inputLanguage: #"["de","en"]"#,
                 priority: 1
+            )
+            _ = context.workflowService.addWorkflow(
+                name: "Docs",
+                template: .summary,
+                trigger: .website("docs.github.com"),
+                behavior: WorkflowBehavior(settings: [
+                    WorkflowBehavior.inputLanguageSettingKey: #"["de","en"]"#
+                ]),
+                sortOrder: 0
             )
             return context
         }
@@ -747,6 +828,18 @@ final class APIRouterAndHandlersTests: XCTestCase {
         XCTAssertEqual((rules["rules"] as? [[String: Any]])?.first?["language_hints"] as? [String], ["de", "en"])
         XCTAssertNil((rules["rules"] as? [[String: Any]])?.first?["input_language"] as? String)
         XCTAssertEqual((legacyProfiles["profiles"] as? [[String: Any]])?.first?["name"] as? String, "Docs")
+
+        let workflowId = try XCTUnwrap((rules["rules"] as? [[String: Any]])?.first?["id"] as? String)
+        let toggle = try Self.jsonObject(
+            await router.route(HTTPRequest(method: "PUT", path: "/v1/rules/toggle", queryParams: ["id": workflowId], headers: [:], body: Data()))
+        )
+        XCTAssertEqual(toggle["name"] as? String, "Docs")
+        XCTAssertEqual(toggle["is_enabled"] as? Bool, false)
+
+        let toggledRules = try Self.jsonObject(
+            await router.route(HTTPRequest(method: "GET", path: "/v1/rules", queryParams: [:], headers: [:], body: Data()))
+        )
+        XCTAssertEqual((toggledRules["rules"] as? [[String: Any]])?.first?["is_enabled"] as? Bool, false)
     }
 
     func testDictionaryTermsEndpointsReplaceNormalizeAndClearTerms() async throws {
@@ -1651,7 +1744,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
     }
 
     @MainActor
-    func testApiStartRecording_startsAudioBeforeDeferredSelectedTextCapture() async throws {
+    func testApiStartRecording_startsAudioBeforeContextAndDeferredSelectedTextCapture() async throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
         var dictationContext: DictationContext?
         defer {
@@ -1683,10 +1776,10 @@ final class APIRouterAndHandlersTests: XCTestCase {
         _ = context.dictationViewModel.apiStartRecording()
 
         XCTAssertEqual(context.dictationViewModel.state, DictationViewModel.State.recording)
-        XCTAssertEqual(events, ["capture_app", "start_audio"])
+        XCTAssertEqual(events, ["start_audio", "capture_app"])
 
         await fulfillment(of: [selectedTextCaptured], timeout: 1.0)
-        XCTAssertEqual(Array(events.prefix(3)), ["capture_app", "start_audio", "selected_text"])
+        XCTAssertEqual(Array(events.prefix(3)), ["start_audio", "capture_app", "selected_text"])
     }
 
     @MainActor
@@ -1737,7 +1830,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
     }
 
     @MainActor
-    func testApiStartRecording_appliesBundleProfileBeforeDeferredMetadataCapture() async throws {
+    func testApiStartRecording_ignoresLegacyBundleProfileBeforeDeferredMetadataCapture() async throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
         var dictationContext: DictationContext?
         defer {
@@ -1764,9 +1857,121 @@ final class APIRouterAndHandlersTests: XCTestCase {
         _ = context.dictationViewModel.apiStartRecording()
 
         XCTAssertEqual(context.dictationViewModel.state, DictationViewModel.State.recording)
-        XCTAssertEqual(context.dictationViewModel.activeRuleName, "Docs")
+        XCTAssertNil(context.dictationViewModel.activeRuleName)
 
         await fulfillment(of: [selectedTextCaptured], timeout: 1.0)
+    }
+
+    @MainActor
+    func testDictationRuntimeIgnoresLegacyProfileLanguageSelection() async throws {
+        let selectedLanguageKey = UserDefaultsKeys.selectedLanguage
+        let originalSelectedLanguage = UserDefaults.standard.object(forKey: selectedLanguageKey)
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var dictationContext: DictationContext?
+        defer {
+            dictationContext = nil
+            if let originalSelectedLanguage {
+                UserDefaults.standard.set(originalSelectedLanguage, forKey: selectedLanguageKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: selectedLanguageKey)
+            }
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        UserDefaults.standard.set("de", forKey: selectedLanguageKey)
+        MockTranscriptionPlugin.reset()
+        dictationContext = Self.makeDictationContext(appSupportDirectory: appSupportDirectory)
+        let context = try XCTUnwrap(dictationContext)
+        context.profileService.addProfile(
+            name: "Legacy Notes",
+            bundleIdentifiers: ["com.apple.Notes"],
+            inputLanguage: "en",
+            translationTargetLanguage: "en"
+        )
+        context.textInsertionService.captureActiveAppOverride = {
+            ("Notes", "com.apple.Notes", nil)
+        }
+        context.audioRecordingService.hasMicrophonePermissionOverride = true
+        context.audioRecordingService.inputAvailabilityOverride = { _ in true }
+        context.audioRecordingService.startRecordingOverride = {}
+        context.audioRecordingService.stopRecordingOverride = { _ in
+            Array(repeating: 0.25, count: Int(AudioRecordingService.targetSampleRate))
+        }
+        context.textInsertionService.accessibilityGrantedOverride = true
+        context.textInsertionService.selectedTextOverride = { nil }
+        context.textInsertionService.pasteSimulatorOverride = {}
+
+        let sessionID = context.dictationViewModel.apiStartRecording()
+
+        XCTAssertEqual(context.dictationViewModel.state, .recording)
+        XCTAssertNil(context.dictationViewModel.activeRuleName)
+
+        _ = context.dictationViewModel.apiStopRecording()
+        for _ in 0..<40 {
+            if context.dictationViewModel.apiDictationSession(id: sessionID)?.status == .completed {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        XCTAssertEqual(context.dictationViewModel.apiDictationSession(id: sessionID)?.status, .completed)
+        XCTAssertEqual(MockTranscriptionPlugin.lastLanguageSelection.requestedLanguage, "de")
+    }
+
+    @MainActor
+    func testDictationRuntimeUsesWorkflowInsteadOfCompetingLegacyProfile() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var dictationContext: DictationContext?
+        defer {
+            dictationContext = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        MockTranscriptionPlugin.reset()
+        dictationContext = Self.makeDictationContext(appSupportDirectory: appSupportDirectory)
+        let context = try XCTUnwrap(dictationContext)
+        context.profileService.addProfile(
+            name: "Legacy Notes",
+            bundleIdentifiers: ["com.apple.Notes"],
+            inputLanguage: "en",
+            translationTargetLanguage: "en"
+        )
+        _ = context.workflowService.addWorkflow(
+            name: "Workflow Notes",
+            template: .dictation,
+            trigger: .app("com.apple.Notes"),
+            behavior: WorkflowBehavior(settings: [
+                WorkflowBehavior.inputLanguageSettingKey: "de"
+            ])
+        )
+        context.textInsertionService.captureActiveAppOverride = {
+            ("Notes", "com.apple.Notes", nil)
+        }
+        context.audioRecordingService.hasMicrophonePermissionOverride = true
+        context.audioRecordingService.inputAvailabilityOverride = { _ in true }
+        context.audioRecordingService.startRecordingOverride = {}
+        context.audioRecordingService.stopRecordingOverride = { _ in
+            Array(repeating: 0.25, count: Int(AudioRecordingService.targetSampleRate))
+        }
+        context.textInsertionService.accessibilityGrantedOverride = true
+        context.textInsertionService.selectedTextOverride = { nil }
+        context.textInsertionService.pasteSimulatorOverride = {}
+
+        let sessionID = context.dictationViewModel.apiStartRecording()
+
+        XCTAssertEqual(context.dictationViewModel.state, .recording)
+        XCTAssertEqual(context.dictationViewModel.activeRuleName, "Workflow Notes")
+
+        _ = context.dictationViewModel.apiStopRecording()
+        for _ in 0..<40 {
+            if context.dictationViewModel.apiDictationSession(id: sessionID)?.status == .completed {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        XCTAssertEqual(context.dictationViewModel.apiDictationSession(id: sessionID)?.status, .completed)
+        XCTAssertEqual(MockTranscriptionPlugin.lastLanguageSelection.requestedLanguage, "de")
     }
 
     @MainActor
@@ -1801,11 +2006,61 @@ final class APIRouterAndHandlersTests: XCTestCase {
 
         _ = context.dictationViewModel.apiStartRecording()
 
-        XCTAssertEqual(Array(events.prefix(3)), ["capture_app", "start_audio", "pause_media"])
+        XCTAssertEqual(Array(events.prefix(3)), ["start_audio", "pause_media", "capture_app"])
     }
 
     @MainActor
-    func testApiStartRecording_playsStartSoundAfterAudioStart() async throws {
+    func testApiStartRecordingFailureSkipsPostAudioStartSideEffects() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        var events: [String] = []
+        let mediaPlaybackService = MockMediaPlaybackService {
+            events.append("pause_media")
+        }
+        let soundService = MockSoundService { event, enabled in
+            guard event == .recordingStarted, enabled else { return }
+            events.append("start_sound")
+        }
+        var dictationContext: DictationContext?
+        defer {
+            dictationContext = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        dictationContext = Self.makeDictationContext(
+            appSupportDirectory: appSupportDirectory,
+            mediaPlaybackService: mediaPlaybackService,
+            soundService: soundService
+        )
+        let context = try XCTUnwrap(dictationContext)
+        context.dictationViewModel.mediaPauseEnabled = true
+        context.dictationViewModel.soundFeedbackEnabled = true
+        context.audioRecordingService.hasMicrophonePermissionOverride = true
+        context.audioRecordingService.inputAvailabilityOverride = { _ in true }
+        context.textInsertionService.captureActiveAppOverride = {
+            events.append("capture_app")
+            return ("Notes", "com.apple.Notes", nil)
+        }
+        context.audioRecordingService.startRecordingOverride = {
+            events.append("start_audio")
+            throw NSError(
+                domain: "TypeWhisperTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Audio start failed"]
+            )
+        }
+
+        let sessionID = context.dictationViewModel.apiStartRecording()
+
+        XCTAssertEqual(events, ["start_audio"])
+        XCTAssertFalse(context.dictationViewModel.isRecordingInputReady)
+        XCTAssertEqual(context.dictationViewModel.state, .inserting)
+        XCTAssertEqual(context.dictationViewModel.actionFeedbackMessage, "Audio start failed")
+        XCTAssertEqual(context.dictationViewModel.apiDictationSession(id: sessionID)?.status, .failed)
+        XCTAssertEqual(context.dictationViewModel.apiDictationSession(id: sessionID)?.error, "Audio start failed")
+    }
+
+    @MainActor
+    func testApiStartRecording_defersStartSoundUntilInputIsReady() async throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
         let originalSelectedInputDeviceUID = UserDefaults.standard.object(forKey: UserDefaultsKeys.selectedInputDeviceUID)
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.selectedInputDeviceUID)
@@ -1835,7 +2090,13 @@ final class APIRouterAndHandlersTests: XCTestCase {
 
         _ = context.dictationViewModel.apiStartRecording()
 
+        XCTAssertEqual(events, ["start_audio"])
+        XCTAssertFalse(context.dictationViewModel.isRecordingInputReady)
+
+        context.audioRecordingService.testingNotifyFirstRecordingAudioBuffer()
+
         XCTAssertEqual(events, ["start_audio", "start_sound"])
+        XCTAssertTrue(context.dictationViewModel.isRecordingInputReady)
     }
 
     @MainActor
@@ -1903,11 +2164,17 @@ final class APIRouterAndHandlersTests: XCTestCase {
         _ = context.dictationViewModel.apiStartRecording()
 
         XCTAssertEqual(events, ["start_audio"])
+        XCTAssertFalse(context.dictationViewModel.isRecordingInputReady)
+
+        context.audioRecordingService.testingNotifyFirstRecordingAudioBuffer()
+
+        XCTAssertEqual(events, ["start_audio"])
+        XCTAssertTrue(context.dictationViewModel.isRecordingInputReady)
         XCTAssertTrue(context.audioRecordingService.hasExplicitDeviceSelection)
     }
 
     @MainActor
-    func testApiStartRecording_keepsStartSoundForUSBInputAfterAudioStart() async throws {
+    func testApiStartRecording_keepsStartSoundForUSBInputAfterInputIsReady() async throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
         let originalSelectedInputDeviceUID = UserDefaults.standard.object(forKey: UserDefaultsKeys.selectedInputDeviceUID)
         var events: [String] = []
@@ -1958,7 +2225,13 @@ final class APIRouterAndHandlersTests: XCTestCase {
 
         _ = context.dictationViewModel.apiStartRecording()
 
+        XCTAssertEqual(events, ["start_audio"])
+        XCTAssertFalse(context.dictationViewModel.isRecordingInputReady)
+
+        context.audioRecordingService.testingNotifyFirstRecordingAudioBuffer()
+
         XCTAssertEqual(events, ["start_audio", "start_sound"])
+        XCTAssertTrue(context.dictationViewModel.isRecordingInputReady)
     }
 
     #if !APPSTORE
@@ -2162,18 +2435,43 @@ final class APIRouterAndHandlersTests: XCTestCase {
     }
 
     @MainActor
-    func testApiStartRecording_showsNoMicDetectedErrorWhenNoInputAvailable() async throws {
+    func testApiStartRecording_showsNoMicDetectedErrorWhenSelectedInputUnavailable() async throws {
         let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        let originalSelectedInputDeviceUID = UserDefaults.standard.object(forKey: UserDefaultsKeys.selectedInputDeviceUID)
+        let deviceID = AudioDeviceID(42)
+        let transportResolver = FakeAudioDeviceTransportResolver(
+            transports: [deviceID: kAudioDeviceTransportTypeUSB]
+        ) { requestedDeviceID in
+            XCTAssertEqual(requestedDeviceID, deviceID)
+        }
+        let selectionEngineValidator = FakeAudioInputSelectionEngineValidator { preferredDeviceID in
+            XCTAssertEqual(preferredDeviceID, deviceID)
+        }
         var dictationContext: DictationContext?
         defer {
             dictationContext = nil
             TestSupport.remove(appSupportDirectory)
+            Self.restoreSelectedInputDeviceUID(originalSelectedInputDeviceUID)
         }
 
-        dictationContext = Self.makeDictationContext(appSupportDirectory: appSupportDirectory)
+        dictationContext = Self.makeDictationContext(
+            appSupportDirectory: appSupportDirectory,
+            audioDeviceTransportResolver: transportResolver,
+            audioDeviceSelectionEngineValidator: selectionEngineValidator
+        )
         let context = try XCTUnwrap(dictationContext)
+        context.audioDeviceService.inputDevices = [
+            AudioInputDevice(deviceID: deviceID, name: "USB Mic", uid: "usb-input")
+        ]
+        context.audioDeviceService.audioDeviceIDResolverOverride = { uid in
+            uid == "usb-input" ? deviceID : nil
+        }
+        context.audioDeviceService.selectedDeviceUID = "usb-input"
         context.audioRecordingService.hasMicrophonePermissionOverride = true
-        context.audioRecordingService.inputAvailabilityOverride = { _ in false }
+        context.audioRecordingService.inputAvailabilityOverride = { selectedDeviceID in
+            XCTAssertEqual(selectedDeviceID, deviceID)
+            return false
+        }
 
         _ = context.dictationViewModel.apiStartRecording()
 
@@ -2507,7 +2805,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
             audioFileService: audioFileService,
             translationService: nil,
             historyService: historyService,
-            profileService: profileService,
+            workflowService: workflowService,
             dictionaryService: dictionaryService,
             dictationViewModel: dictationViewModel
         )
@@ -2518,6 +2816,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
             modelManager: modelManager,
             historyService: historyService,
             profileService: profileService,
+            workflowService: workflowService,
             dictionaryService: dictionaryService,
             dictationViewModel: dictationViewModel,
             audioRecordingService: audioRecordingService,
@@ -2648,6 +2947,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
         let historyService: HistoryService
         let recentTranscriptionStore: RecentTranscriptionStore
         let profileService: ProfileService
+        let workflowService: WorkflowService
         let ttsProvider: MockTTSProviderPlugin
         private let retainedObjects: [AnyObject]
 
@@ -2661,6 +2961,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
             historyService: HistoryService,
             recentTranscriptionStore: RecentTranscriptionStore,
             profileService: ProfileService,
+            workflowService: WorkflowService,
             ttsProvider: MockTTSProviderPlugin,
             retainedObjects: [AnyObject]
         ) {
@@ -2673,6 +2974,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
             self.historyService = historyService
             self.recentTranscriptionStore = recentTranscriptionStore
             self.profileService = profileService
+            self.workflowService = workflowService
             self.ttsProvider = ttsProvider
             self.retainedObjects = retainedObjects
         }
@@ -2802,6 +3104,7 @@ final class APIRouterAndHandlersTests: XCTestCase {
             historyService: historyService,
             recentTranscriptionStore: recentTranscriptionStore,
             profileService: profileService,
+            workflowService: workflowService,
             ttsProvider: ttsProvider,
             retainedObjects: [
                 EventBus.shared,
@@ -4267,6 +4570,7 @@ final class AudioRecordingServiceInputAvailabilityTests: XCTestCase {
 
         service.hasMicrophonePermissionOverride = true
         service.selectedDeviceID = AudioDeviceID(42)
+        service.hasExplicitDeviceSelection = true
         service.inputAvailabilityOverride = { selectedDeviceID in
             XCTAssertEqual(selectedDeviceID, AudioDeviceID(42))
             return false
@@ -4309,7 +4613,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(spaceHotkey(), for: .toggle)
 
         var startCount = 0
-        service.onDictationStart = {
+        service.onDictationStart = { _ in
             startCount += 1
         }
 
@@ -4326,7 +4630,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(spaceHotkey(), for: .toggle)
 
         var startCount = 0
-        service.onDictationStart = {
+        service.onDictationStart = { _ in
             startCount += 1
         }
 
@@ -4340,6 +4644,28 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testPushToTalkStartCallbackIncludesRequestTimestamp() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        service.setHotkeyForTesting(spaceHotkey(), for: .pushToTalk)
+
+        let before = DispatchTime.now().uptimeNanoseconds
+        var requestTimestamp: UInt64?
+        service.onDictationStart = { timestamp in
+            requestTimestamp = timestamp
+        }
+
+        let keyDown = try makeKeyboardEvent(keyCode: 0x31, keyDown: true)
+
+        XCTAssertTrue(service.processEventForTesting(keyDown, source: .monitor))
+
+        let timestamp = try XCTUnwrap(requestTimestamp)
+        XCTAssertGreaterThanOrEqual(timestamp, before)
+        XCTAssertLessThanOrEqual(timestamp, DispatchTime.now().uptimeNanoseconds)
+    }
+
+    @MainActor
     func testMonitorFallbackStopsPushToTalkOnKeyUp() throws {
         let service = HotkeyService()
         service.suspendMonitoring()
@@ -4348,7 +4674,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
 
         var startCount = 0
         var stopCount = 0
-        service.onDictationStart = {
+        service.onDictationStart = { _ in
             startCount += 1
         }
         service.onDictationStop = {
@@ -4373,7 +4699,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
 
         var startCount = 0
         var stopCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
 
         let comboDown = try makeFlagsChangedEvent(keyCode: 0x3D, modifierFlags: [.command, .option])
@@ -4405,7 +4731,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
 
         var startCount = 0
         var stopCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
 
         let rightCommandDown = try makeFlagsChangedEvent(keyCode: 0x36, modifierFlags: [.command])
@@ -4440,7 +4766,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(try rightCommandRightOptionComboHotkey(), for: .pushToTalk)
 
         var startCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
 
         let leftCommandDown = try makeFlagsChangedEvent(
             keyCode: 0x37,
@@ -4465,7 +4791,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
 
         var startCount = 0
         var stopCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
 
         let rightCommandDown = try makeFlagsChangedEvent(
@@ -4494,7 +4820,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(try rightCommandRightOptionComboHotkey(), for: .pushToTalk)
 
         var startCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
 
         let rightCommandDown = try makeFlagsChangedEvent(
             keyCode: 0x36,
@@ -4511,13 +4837,77 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testGenericModifierComboTriggersOnlyForExactModifiers() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        service.setHotkeyForTesting(controlShiftComboHotkey(), for: .toggle)
+
+        var startCount = 0
+        service.onDictationStart = { _ in startCount += 1 }
+
+        let comboDown = try makeFlagsChangedEvent(keyCode: 0x38, modifierFlags: [.control, .shift])
+
+        XCTAssertTrue(service.processEventForTesting(comboDown, source: .monitor))
+        XCTAssertEqual(startCount, 1)
+    }
+
+    @MainActor
+    func testGenericModifierComboRejectsExtraModifiers() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        service.setHotkeyForTesting(controlShiftComboHotkey(), for: .toggle)
+
+        var startCount = 0
+        service.onDictationStart = { _ in startCount += 1 }
+
+        let commandControlShift = try makeFlagsChangedEvent(
+            keyCode: 0x38,
+            modifierFlags: [.command, .control, .shift]
+        )
+        let controlOptionShift = try makeFlagsChangedEvent(
+            keyCode: 0x38,
+            modifierFlags: [.control, .option, .shift]
+        )
+        let fnControlShift = try makeFlagsChangedEvent(
+            keyCode: 0x3F,
+            modifierFlags: [.function, .control, .shift]
+        )
+
+        XCTAssertFalse(service.processEventForTesting(commandControlShift, source: .monitor))
+        XCTAssertFalse(service.processEventForTesting(controlOptionShift, source: .monitor))
+        XCTAssertFalse(service.processEventForTesting(fnControlShift, source: .monitor))
+        XCTAssertEqual(startCount, 0)
+    }
+
+    @MainActor
+    func testSideSpecificModifierComboRejectsExtraPhysicalModifiers() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        service.setHotkeyForTesting(try rightCommandRightOptionComboHotkey(), for: .toggle)
+
+        var startCount = 0
+        service.onDictationStart = { _ in startCount += 1 }
+
+        let rightComboWithExtraLeftCommand = try makeFlagsChangedEvent(
+            keyCode: 0x37,
+            modifierFlags: flags(generic: [.command, .option], deviceKeyCodes: [0x36, 0x3D, 0x37])
+        )
+
+        XCTAssertFalse(service.processEventForTesting(rightComboWithExtraLeftCommand, source: .monitor))
+        XCTAssertEqual(startCount, 0)
+    }
+
+    @MainActor
     func testLegacyGenericModifierComboStillTriggersFromLeftAndRightSides() throws {
         let leftService = HotkeyService()
         leftService.suspendMonitoring()
         leftService.setHotkeyForTesting(try legacyCommandOptionComboHotkey(), for: .toggle)
 
         var leftStartCount = 0
-        leftService.onDictationStart = { leftStartCount += 1 }
+        leftService.onDictationStart = { _ in leftStartCount += 1 }
 
         let leftOptionDown = try makeFlagsChangedEvent(
             keyCode: 0x3A,
@@ -4531,7 +4921,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         rightService.setHotkeyForTesting(try legacyCommandOptionComboHotkey(), for: .toggle)
 
         var rightStartCount = 0
-        rightService.onDictationStart = { rightStartCount += 1 }
+        rightService.onDictationStart = { _ in rightStartCount += 1 }
 
         let rightOptionDown = try makeFlagsChangedEvent(
             keyCode: 0x3D,
@@ -4594,7 +4984,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         var startCount = 0
         var stopCount = 0
         var interruptionCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
         service.onPushToTalkInterruption = { interruptionCount += 1 }
 
@@ -4646,7 +5036,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(commandOptionComboHotkey(), for: .toggle)
 
         var startCount = 0
-        service.onDictationStart = {
+        service.onDictationStart = { _ in
             startCount += 1
         }
 
@@ -4666,7 +5056,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(commandOptionAHotkey(), for: .toggle)
 
         var startCount = 0
-        service.onDictationStart = {
+        service.onDictationStart = { _ in
             startCount += 1
         }
 
@@ -4688,7 +5078,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(commandOptionComboHotkey(), for: .toggle)
 
         var startCount = 0
-        service.onDictationStart = {
+        service.onDictationStart = { _ in
             startCount += 1
         }
 
@@ -4706,7 +5096,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(commandOptionAHotkey(), for: .toggle)
 
         var startCount = 0
-        service.onDictationStart = {
+        service.onDictationStart = { _ in
             startCount += 1
         }
 
@@ -4724,7 +5114,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(bareSpaceHotkey(), for: .toggle)
 
         var startCount = 0
-        service.onDictationStart = {
+        service.onDictationStart = { _ in
             startCount += 1
         }
 
@@ -4745,7 +5135,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
 
         var startCount = 0
         var stopCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
 
         let keyDown = try makeFnEvent(isDown: true)
@@ -4769,7 +5159,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
 
         var startCount = 0
         var stopCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
 
         let keyDown = try makeFnEvent(isDown: true)
@@ -4794,7 +5184,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
 
         var startCount = 0
         var stopCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
 
         let keyDown = try makeFnEvent(isDown: true)
@@ -4819,7 +5209,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.setHotkeyForTesting(fnHotkey(), for: .toggle)
 
         var startCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
 
         let keyDown = try makeFnEvent(isDown: true)
         let keyUp = try makeFnEvent(isDown: false)
@@ -4841,7 +5231,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         var callbackCount = 0
         var startCount = 0
         service.onRecentTranscriptionsToggle = { callbackCount += 1 }
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
 
         let keyDown = try makeKeyboardEvent(keyCode: 0x31, keyDown: true)
 
@@ -4862,7 +5252,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         var startCount = 0
         var stopCount = 0
         var callbackCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
         service.onRecentTranscriptionsToggle = { callbackCount += 1 }
 
@@ -4888,7 +5278,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         var callbackCount = 0
         var startCount = 0
         service.onCopyLastTranscription = { callbackCount += 1 }
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
 
         let keyDown = try makeKeyboardEvent(keyCode: 0x08, keyDown: true, flags: [.maskCommand, .maskShift])
 
@@ -4909,7 +5299,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         var startCount = 0
         var stopCount = 0
         var callbackCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
         service.onCopyLastTranscription = { callbackCount += 1 }
 
@@ -4935,7 +5325,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         var callbackCount = 0
         var startCount = 0
         service.onRecorderToggle = { callbackCount += 1 }
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
 
         let keyDown = try makeKeyboardEvent(keyCode: 0x00, keyDown: true, flags: [.maskCommand, .maskAlternate])
 
@@ -4956,7 +5346,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         var startCount = 0
         var stopCount = 0
         var callbackCount = 0
-        service.onDictationStart = { startCount += 1 }
+        service.onDictationStart = { _ in startCount += 1 }
         service.onDictationStop = { stopCount += 1 }
         service.onRecorderToggle = { callbackCount += 1 }
 
@@ -5002,6 +5392,64 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testKeyWithModifiersRejectsExtraModifiers() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        service.setHotkeyForTesting(commandOptionAHotkey(), for: .toggle)
+
+        var startCount = 0
+        service.onDictationStart = { _ in startCount += 1 }
+
+        let keyDown = try makeKeyboardEvent(
+            keyCode: 0x00,
+            keyDown: true,
+            flags: [.maskCommand, .maskAlternate, .maskShift]
+        )
+
+        XCTAssertFalse(service.processEventForTesting(keyDown, source: .monitor))
+        XCTAssertEqual(startCount, 0)
+    }
+
+    @MainActor
+    func testProfileModifierComboRejectsExtraModifiers() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        let profileId = UUID()
+        service.registerProfileHotkeys([(id: profileId, hotkey: controlShiftComboHotkey())])
+
+        var startedProfileId: UUID?
+        service.onProfileDictationStart = { profileId, _ in startedProfileId = profileId }
+
+        let extraModifierDown = try makeFlagsChangedEvent(
+            keyCode: 0x38,
+            modifierFlags: [.command, .control, .shift]
+        )
+
+        XCTAssertFalse(service.processEventForTesting(extraModifierDown, source: .monitor))
+        XCTAssertNil(startedProfileId)
+    }
+
+    @MainActor
+    func testProfileHotkeysAreIgnoredForLegacyRuntime() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        let profileId = UUID()
+        service.registerProfileHotkeys([(id: profileId, hotkey: spaceHotkey())])
+
+        var startedProfileId: UUID?
+        service.onProfileDictationStart = { profileId, _ in startedProfileId = profileId }
+
+        let keyDown = try makeKeyboardEvent(keyCode: 0x31, keyDown: true)
+
+        XCTAssertFalse(service.processEventForTesting(keyDown, source: .monitor))
+        XCTAssertNil(startedProfileId)
+        XCTAssertNil(service.currentMode)
+    }
+
+    @MainActor
     func testWorkflowHotkeyInvokesDedicatedWorkflowCallback() throws {
         let service = HotkeyService()
         service.suspendMonitoring()
@@ -5010,7 +5458,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         service.registerWorkflowHotkeys([(id: workflowId, hotkey: spaceHotkey(), behavior: .startDictation)])
 
         var startedWorkflowId: UUID?
-        service.onWorkflowDictationStart = { startedWorkflowId = $0 }
+        service.onWorkflowDictationStart = { workflowId, _ in startedWorkflowId = workflowId }
 
         let keyDown = try makeKeyboardEvent(keyCode: 0x31, keyDown: true)
         let keyUp = try makeKeyboardEvent(keyCode: 0x31, keyDown: false)
@@ -5036,7 +5484,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         var textWorkflowId: UUID?
         var startedWorkflowId: UUID?
         service.onWorkflowTextProcessing = { textWorkflowId = $0 }
-        service.onWorkflowDictationStart = { startedWorkflowId = $0 }
+        service.onWorkflowDictationStart = { workflowId, _ in startedWorkflowId = workflowId }
 
         let keyDown = try makeKeyboardEvent(keyCode: 0x31, keyDown: true)
         let keyUp = try makeKeyboardEvent(keyCode: 0x31, keyDown: false)
@@ -5064,7 +5512,7 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         ])
 
         var startedWorkflowIds: [UUID] = []
-        service.onWorkflowDictationStart = { startedWorkflowIds.append($0) }
+        service.onWorkflowDictationStart = { workflowId, _ in startedWorkflowIds.append(workflowId) }
 
         let firstDown = try makeKeyboardEvent(
             keyCode: 0x31,
@@ -5084,6 +5532,138 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testWorkflowModifierComboRejectsExtraModifiers() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        let workflowId = UUID()
+        service.registerWorkflowHotkeys([
+            (id: workflowId, hotkey: controlShiftComboHotkey(), behavior: .startDictation)
+        ])
+
+        var startedWorkflowId: UUID?
+        service.onWorkflowDictationStart = { workflowId, _ in startedWorkflowId = workflowId }
+
+        let extraModifierDown = try makeFlagsChangedEvent(
+            keyCode: 0x38,
+            modifierFlags: [.command, .control, .shift]
+        )
+
+        XCTAssertFalse(service.processEventForTesting(extraModifierDown, source: .monitor))
+        XCTAssertNil(startedWorkflowId)
+    }
+
+    @MainActor
+    func testGlobalSlotCanTriggerFromMultipleHotkeys() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        service.setHotkeysForTesting([spaceHotkey(), commandOptionAHotkey()], for: .toggle)
+
+        var startCount = 0
+        service.onDictationStart = { _ in startCount += 1 }
+
+        let firstDown = try makeKeyboardEvent(keyCode: 0x31, keyDown: true)
+        let secondDown = try makeKeyboardEvent(
+            keyCode: 0x00,
+            keyDown: true,
+            flags: [.maskCommand, .maskAlternate]
+        )
+
+        XCTAssertTrue(service.processEventForTesting(firstDown, source: .monitor))
+        service.cancelDictation()
+        XCTAssertTrue(service.processEventForTesting(secondDown, source: .monitor))
+        XCTAssertEqual(startCount, 2)
+    }
+
+    @MainActor
+    func testLoadHotkeysMigratesLegacySingularUserDefaults() throws {
+        try withCleanHotkeyDefaults {
+            let defaults = UserDefaults.standard
+            let legacyHotkey = commandShiftCHotkey()
+            defaults.set(try JSONEncoder().encode(legacyHotkey), forKey: HotkeySlotType.copyLastTranscription.defaultsKey)
+
+            let service = HotkeyService()
+            service.loadHotkeysForTesting()
+
+            XCTAssertEqual(service.hotkeys(for: .copyLastTranscription), [legacyHotkey])
+
+            let pluralData = try XCTUnwrap(defaults.data(forKey: HotkeySlotType.copyLastTranscription.hotkeysDefaultsKey))
+            XCTAssertEqual(try JSONDecoder().decode([UnifiedHotkey].self, from: pluralData), [legacyHotkey])
+
+            let legacyData = try XCTUnwrap(defaults.data(forKey: HotkeySlotType.copyLastTranscription.defaultsKey))
+            XCTAssertEqual(try JSONDecoder().decode(UnifiedHotkey.self, from: legacyData), legacyHotkey)
+        }
+    }
+
+    @MainActor
+    func testClearingGlobalSlotRemovesPluralAndLegacyPersistence() throws {
+        try withCleanHotkeyDefaults {
+            let defaults = UserDefaults.standard
+            let service = HotkeyService()
+            service.suspendMonitoring()
+
+            service.updateHotkey(spaceHotkey(), for: .toggle)
+            service.appendHotkey(commandOptionAHotkey(), for: .toggle)
+
+            XCTAssertNotNil(defaults.data(forKey: HotkeySlotType.toggle.defaultsKey))
+            XCTAssertNotNil(defaults.data(forKey: HotkeySlotType.toggle.hotkeysDefaultsKey))
+
+            service.clearHotkey(for: .toggle)
+            service.suspendMonitoring()
+
+            XCTAssertNil(defaults.data(forKey: HotkeySlotType.toggle.defaultsKey))
+            XCTAssertNil(defaults.data(forKey: HotkeySlotType.toggle.hotkeysDefaultsKey))
+            XCTAssertTrue(service.hotkeys(for: .toggle).isEmpty)
+        }
+    }
+
+    @MainActor
+    func testRemovingConflictingGlobalHotkeyPreservesOtherBindingsInSlot() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        service.setHotkeysForTesting([spaceHotkey(), commandOptionAHotkey()], for: .toggle)
+
+        service.removeConflictingHotkey(spaceHotkey(), for: .toggle)
+        service.suspendMonitoring()
+
+        XCTAssertEqual(service.hotkeys(for: .toggle), [commandOptionAHotkey()])
+    }
+
+    @MainActor
+    func testWorkflowConflictCheckDetectsAnyGlobalSlotBinding() throws {
+        let service = HotkeyService()
+        service.suspendMonitoring()
+
+        service.setHotkeysForTesting([spaceHotkey(), commandOptionAHotkey()], for: .toggle)
+
+        XCTAssertEqual(service.isHotkeyAssignedToGlobalSlot(commandOptionAHotkey()), .toggle)
+    }
+
+    private func withCleanHotkeyDefaults(_ body: () throws -> Void) throws {
+        let defaults = UserDefaults.standard
+        let keys = HotkeySlotType.allCases.flatMap { [$0.defaultsKey, $0.hotkeysDefaultsKey] }
+        let originals = keys.reduce(into: [String: Any]()) { result, key in
+            if let value = defaults.object(forKey: key) {
+                result[key] = value
+            }
+        }
+        keys.forEach { defaults.removeObject(forKey: $0) }
+        defer {
+            keys.forEach { key in
+                if let value = originals[key] {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        try body()
+    }
+
+    @MainActor
     private func spaceHotkey() -> UnifiedHotkey {
         UnifiedHotkey(
             keyCode: 0x31,
@@ -5097,6 +5677,15 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
         UnifiedHotkey(
             keyCode: 0x31,
             modifierFlags: NSEvent.ModifierFlags([.option, .command]).rawValue,
+            isFn: false
+        )
+    }
+
+    @MainActor
+    private func controlShiftComboHotkey() -> UnifiedHotkey {
+        UnifiedHotkey(
+            keyCode: UnifiedHotkey.modifierComboKeyCode,
+            modifierFlags: NSEvent.ModifierFlags([.control, .shift]).rawValue,
             isFn: false
         )
     }
@@ -5123,9 +5712,19 @@ final class HotkeyServiceCompatibilityTests: XCTestCase {
     }
 
     private func decodedCommandOptionComboHotkey(modifierKeyCodes: [UInt16]?) throws -> UnifiedHotkey {
+        try decodedModifierComboHotkey(
+            modifierFlags: [.command, .option],
+            modifierKeyCodes: modifierKeyCodes
+        )
+    }
+
+    private func decodedModifierComboHotkey(
+        modifierFlags: NSEvent.ModifierFlags,
+        modifierKeyCodes: [UInt16]?
+    ) throws -> UnifiedHotkey {
         var payload: [String: Any] = [
             "keyCode": Int(UnifiedHotkey.modifierComboKeyCode),
-            "modifierFlags": Int(NSEvent.ModifierFlags([.command, .option]).rawValue),
+            "modifierFlags": Int(modifierFlags.rawValue),
             "isFn": false,
             "isDoubleTap": false,
         ]

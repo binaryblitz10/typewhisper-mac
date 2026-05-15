@@ -377,6 +377,115 @@ final class AudioEngineRecoverySupportTests: XCTestCase {
         XCTAssertTrue(error.localizedDescription.contains("expected 48000.0 Hz/1 ch"))
         XCTAssertTrue(error.localizedDescription.contains("got 0.0 Hz/0 ch"))
     }
+
+    func testRecordingSuccessDiscardDeletesRecoveryAudio() async throws {
+        let directory = makeRecoveryTestDirectory()
+        let store = DictationRecoveryAudioStore(directory: directory)
+        let service = AudioRecordingService(recoveryAudioStore: store)
+        service.hasMicrophonePermissionOverride = true
+        service.startRecordingOverride = {}
+        service.stopRecordingOverride = { _ in service.getCurrentBuffer() }
+
+        try service.startRecording()
+        service.testingProcessConvertedSamples([0.25, -0.25])
+        _ = await service.stopRecording(policy: .immediate)
+        service.discardActiveRecoveryRecording()
+
+        XCTAssertNil(service.latestRecoveryRecordingURL)
+        XCTAssertTrue(try recoveryFileNames(in: directory).isEmpty)
+    }
+
+    func testRecordingSuccessDiscardKeepsPreviousStoredRecoveryAudio() async throws {
+        let directory = makeRecoveryTestDirectory()
+        let store = DictationRecoveryAudioStore(directory: directory)
+        store.startNewRecording()
+        store.append([0.5])
+        let existingRecovery = try XCTUnwrap(store.preserveActiveRecording())
+
+        let service = AudioRecordingService(recoveryAudioStore: store)
+        service.hasMicrophonePermissionOverride = true
+        service.startRecordingOverride = {}
+        service.stopRecordingOverride = { _ in service.getCurrentBuffer() }
+
+        try service.startRecording()
+        service.testingProcessConvertedSamples([0.25, -0.25])
+        _ = await service.stopRecording(policy: .immediate)
+        service.discardActiveRecoveryRecording()
+
+        XCTAssertEqual(service.recoveryRecordingURLs, [existingRecovery])
+        XCTAssertEqual(service.latestRecoveryRecordingURL, existingRecovery)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: existingRecovery.path))
+        XCTAssertEqual(try recoveryFileNames(in: directory), [existingRecovery.lastPathComponent])
+    }
+
+    func testTranscriptionFailureCanPreserveStoppedRecoveryAudio() async throws {
+        let directory = makeRecoveryTestDirectory()
+        let store = DictationRecoveryAudioStore(directory: directory)
+        let service = AudioRecordingService(recoveryAudioStore: store)
+        service.hasMicrophonePermissionOverride = true
+        service.startRecordingOverride = {}
+        service.stopRecordingOverride = { _ in service.getCurrentBuffer() }
+
+        try service.startRecording()
+        service.testingProcessConvertedSamples([0.25, -0.25, 0.5])
+        _ = await service.stopRecording(policy: .immediate)
+        let url = try XCTUnwrap(service.preserveActiveRecoveryRecording())
+
+        let data = try Data(contentsOf: url)
+        XCTAssertEqual(readRecoveryUInt32(data, at: 40), UInt32(3 * 2))
+        XCTAssertEqual(service.latestRecoveryRecordingURL, url)
+    }
+
+    func testRecoveryCircuitBreakerPreservesBufferedRecoveryAudio() throws {
+        let directory = makeRecoveryTestDirectory()
+        let store = DictationRecoveryAudioStore(directory: directory)
+        let service = AudioRecordingService(recoveryAudioStore: store)
+        service.hasMicrophonePermissionOverride = true
+        service.startRecordingOverride = {}
+
+        try service.startRecording()
+        service.testingProcessConvertedSamples([0.25, -0.25, 0.5])
+        service.testingFailActiveRecordingDueToRecovery(.engineStartFailed("test circuit breaker"))
+
+        let url = try XCTUnwrap(service.latestRecoveryRecordingURL)
+        let data = try Data(contentsOf: url)
+        XCTAssertEqual(readRecoveryUInt32(data, at: 40), UInt32(3 * 2))
+    }
+
+    func testRecordingCancelDiscardDeletesRecoveryAudio() async throws {
+        let directory = makeRecoveryTestDirectory()
+        let store = DictationRecoveryAudioStore(directory: directory)
+        let service = AudioRecordingService(recoveryAudioStore: store)
+        service.hasMicrophonePermissionOverride = true
+        service.startRecordingOverride = {}
+        service.stopRecordingOverride = { _ in service.getCurrentBuffer() }
+
+        try service.startRecording()
+        service.testingProcessConvertedSamples([0.1, 0.2])
+        _ = await service.stopRecording(policy: .immediate)
+        service.discardActiveRecoveryRecording()
+
+        XCTAssertNil(service.latestRecoveryRecordingURL)
+        XCTAssertTrue(try recoveryFileNames(in: directory).isEmpty)
+    }
+
+    private func makeRecoveryTestDirectory() -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AudioEngineRecoverySupportTests-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        return directory
+    }
+
+    private func recoveryFileNames(in directory: URL) throws -> [String] {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(atPath: directory.path)
+    }
+
+    private func readRecoveryUInt32(_ data: Data, at offset: Int) -> UInt32 {
+        data[offset..<(offset + 4)].reversed().reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+    }
 }
 
 final class AudioDeviceServiceCompatibilityTests: XCTestCase {
@@ -504,7 +613,7 @@ final class AudioDeviceServiceCompatibilityTests: XCTestCase {
         XCTAssertEqual(service.selectedDeviceCompatibility, .compatible)
     }
 
-    func testSelectingUSBDeviceValidatesWithInputOnlyCaptureInsteadOfAVAudioEngineProbe() {
+    func testSelectingUSBDeviceSkipsInputOnlyProbeAndAllowsSelection() {
         UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.selectedInputDeviceUID)
         let usbDeviceID = AudioDeviceID(712)
         let inputCaptureFactory = FakeAudioInputCaptureFactory()
@@ -530,9 +639,38 @@ final class AudioDeviceServiceCompatibilityTests: XCTestCase {
 
         XCTAssertEqual(service.selectedDeviceUID, "wave-xlr")
         XCTAssertNil(service.previewError)
-        XCTAssertEqual(inputCaptureFactory.validateCalls, [
-            .init(deviceID: usbDeviceID, label: "selection")
-        ])
+        XCTAssertTrue(inputCaptureFactory.validateCalls.isEmpty)
+        XCTAssertEqual(service.selectedDeviceCompatibility, .compatible)
+    }
+
+    func testSelectingUSBDeviceAllowsSelectionWhenInputOnlyValidationFails() {
+        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.selectedInputDeviceUID)
+        let usbDeviceID = AudioDeviceID(713)
+        let inputCaptureFactory = FakeAudioInputCaptureFactory()
+        inputCaptureFactory.validateError = SelectedInputDeviceError.incompatible(.engineStartFailed)
+        let transportResolver = FakeAudioDeviceTransportResolver(
+            transports: [usbDeviceID: kAudioDeviceTransportTypeUSB]
+        )
+        let service = AudioDeviceService(
+            initialInputDevices: [
+                AudioInputDevice(deviceID: usbDeviceID, name: "Babyface Pro", uid: "babyface-pro")
+            ],
+            monitorDeviceChanges: false,
+            probeCompatibilities: false,
+            transportResolver: transportResolver,
+            selectionEngineValidator: AVAudioInputSelectionEngineValidator(inputCaptureFactory: inputCaptureFactory),
+            inputCaptureFactory: inputCaptureFactory
+        )
+
+        service.audioDeviceIDResolverOverride = { uid in
+            uid == "babyface-pro" ? usbDeviceID : nil
+        }
+
+        service.selectedDeviceUID = "babyface-pro"
+
+        XCTAssertEqual(service.selectedDeviceUID, "babyface-pro")
+        XCTAssertNil(service.previewError)
+        XCTAssertTrue(inputCaptureFactory.validateCalls.isEmpty)
         XCTAssertEqual(service.selectedDeviceCompatibility, .compatible)
     }
 
@@ -730,6 +868,44 @@ final class AudioDeviceServiceCompatibilityTests: XCTestCase {
         service.stopPreview()
 
         XCTAssertEqual(inputCaptureFactory.createdSessions.first?.stopCalls, 1)
+    }
+
+    @MainActor
+    func testDiagnosticsReportIncludesSelectedUSBDeviceAndPreviewFailure() throws {
+        UserDefaults.standard.set("usb-input", forKey: UserDefaultsKeys.selectedInputDeviceUID)
+        let usbDeviceID = AudioDeviceID(711)
+        let inputCaptureFactory = FakeAudioInputCaptureFactory()
+        inputCaptureFactory.startError = SelectedInputDeviceError.incompatible(.engineStartFailed)
+        let transportResolver = FakeAudioDeviceTransportResolver(
+            transports: [usbDeviceID: kAudioDeviceTransportTypeUSB]
+        )
+        let service = AudioDeviceService(
+            initialInputDevices: [
+                AudioInputDevice(deviceID: usbDeviceID, name: "USB Mic", uid: "usb-input")
+            ],
+            monitorDeviceChanges: false,
+            probeCompatibilities: false,
+            transportResolver: transportResolver,
+            inputCaptureFactory: inputCaptureFactory
+        )
+        service.hasMicrophonePermissionOverride = true
+        service.audioDeviceIDResolverOverride = { uid in
+            uid == "usb-input" ? usbDeviceID : nil
+        }
+
+        service.startPreview()
+        let report = service.diagnosticsReport()
+        let selectedDevice = try XCTUnwrap(report.devices.first { $0.deviceID == UInt32(usbDeviceID) })
+
+        XCTAssertFalse(service.isPreviewActive)
+        XCTAssertEqual(report.selectedInputDeviceUID, "usb-input")
+        XCTAssertEqual(report.selectedInputDeviceID, UInt32(usbDeviceID))
+        XCTAssertEqual(report.selectedInputDeviceName, "USB Mic")
+        XCTAssertEqual(report.previewError, "incompatible:engineStartFailed")
+        XCTAssertFalse(report.selectedInputUsesBluetoothTransport)
+        XCTAssertTrue(selectedDevice.isSelected)
+        XCTAssertTrue(selectedDevice.listedByTypeWhisper)
+        XCTAssertEqual(selectedDevice.compatibility, "incompatible:engineStartFailed")
     }
 }
 
@@ -1072,13 +1248,26 @@ final class AudioRecordingServiceSelectedDeviceTests: XCTestCase {
 
         XCTAssertTrue(service.isRecording)
         XCTAssertEqual(inputCaptureFactory.startCalls, [
-            .init(deviceID: usbDeviceID, label: "recording", bufferSize: 1024)
+            .init(deviceID: usbDeviceID, label: "recording", bufferSize: 256)
         ])
 
         let samples = await service.stopRecording(policy: .immediate)
 
         XCTAssertTrue(samples.isEmpty)
         XCTAssertEqual(inputCaptureFactory.createdSessions.first?.stopCalls, 1)
+    }
+
+    func testDefaultInputRecordingSkipsAvailabilityPreflightFastPath() throws {
+        let service = AudioRecordingService()
+        service.hasMicrophonePermissionOverride = true
+        service.hasExplicitDeviceSelection = false
+        service.inputAvailabilityOverride = { _ in
+            XCTFail("default-input fast path should rely on engine startup instead of input availability preflight")
+            return true
+        }
+        service.startRecordingOverride = {}
+
+        XCTAssertNoThrow(try service.startRecording())
     }
 
     func testRecoveryEngineSwap_replacesStoredEngineInstance() {
@@ -1150,6 +1339,12 @@ final class AudioRecordingServiceSelectedDeviceTests: XCTestCase {
 }
 
 final class CoreAudioHALInputCaptureSessionTests: XCTestCase {
+    func testInputOnlyCaptureCapsMultichannelHardwareToStereoClientFormat() {
+        XCTAssertEqual(CoreAudioHALInputCaptureSession.testingInputOnlyCaptureChannelCount(for: 1), 1)
+        XCTAssertEqual(CoreAudioHALInputCaptureSession.testingInputOnlyCaptureChannelCount(for: 2), 2)
+        XCTAssertEqual(CoreAudioHALInputCaptureSession.testingInputOnlyCaptureChannelCount(for: 14), 2)
+    }
+
     func testSessionConfiguresInputOnlyHALUnitAndPullsInputFromRenderCallback() throws {
         let operations = FakeCoreAudioHALInputOperations()
         let format = try XCTUnwrap(AVAudioFormat(
@@ -1229,6 +1424,44 @@ final class CoreAudioHALInputCaptureSessionTests: XCTestCase {
             XCTAssertEqual(error as? SelectedInputDeviceError, .incompatible(.cannotSetDevice))
         }
         XCTAssertEqual(operations.disposeCalls, 1)
+    }
+
+    func testSessionRecordsInputOnlyCaptureFailureDiagnostics() throws {
+        AudioInputCaptureDiagnosticsStore.clear()
+        defer { AudioInputCaptureDiagnosticsStore.clear() }
+
+        let operations = FakeCoreAudioHALInputOperations()
+        operations.currentDeviceError = CoreAudioHALInputOperationError(
+            operation: "test-hal set current input device",
+            status: OSStatus(-50)
+        )
+        let format = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+
+        XCTAssertThrowsError(try CoreAudioHALInputCaptureSession(
+            deviceID: AudioDeviceID(902),
+            format: format,
+            bufferSize: 128,
+            label: "test-hal",
+            operations: operations,
+            onBuffer: { _ in }
+        )) { error in
+            XCTAssertTrue(error is CoreAudioHALInputOperationError)
+        }
+
+        let failure = try XCTUnwrap(AudioInputCaptureDiagnosticsStore.lastFailure())
+        XCTAssertEqual(failure.label, "test-hal")
+        XCTAssertEqual(failure.deviceID, 902)
+        XCTAssertEqual(failure.operation, "test-hal set current input device")
+        XCTAssertEqual(failure.status, -50)
+        XCTAssertEqual(failure.statusString, "-50")
+        XCTAssertEqual(failure.errorDescription, "test-hal set current input device failed with status -50 (-50)")
+        XCTAssertEqual(failure.formatSampleRate, 48_000)
+        XCTAssertEqual(failure.formatChannelCount, 1)
     }
 }
 
