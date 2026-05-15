@@ -843,7 +843,7 @@ final class TextInsertionService {
         if cursorLocation > 0, cursorLocation <= fullText.length {
             let raw = fullText.substring(to: cursorLocation)
             // Bounded to last 500 chars (nearest to cursor)
-            leftContext = raw.isEmpty ? nil : String(raw.suffix(500))
+            leftContext = raw.isEmpty ? nil : String(raw.suffix(5000))
         } else {
             leftContext = nil
         }
@@ -851,8 +851,8 @@ final class TextInsertionService {
         let rightContext: String?
         if selectionEnd < fullText.length {
             let raw = fullText.substring(from: selectionEnd)
-            // Bounded to first 500 chars (nearest to cursor)
-            rightContext = raw.isEmpty ? nil : String(raw.prefix(500))
+            // Bounded to first 2000 chars (nearest to cursor)
+            rightContext = raw.isEmpty ? nil : String(raw.prefix(20000))
         } else {
             rightContext = nil
         }
@@ -937,7 +937,8 @@ final class TextInsertionService {
         // Preserve original transcription casing and skip all mid-sentence logic.
         if let leftContext = context?.leftContext,
            let last = leftContext.last,
-           last == "\n" || last == "\r" {
+           last == "\n" || last == "\r"
+        {
             return text
         }
 
