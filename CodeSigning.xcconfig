@@ -5,5 +5,7 @@
 //
 // Find your Team ID: Xcode > Settings > Accounts > select team
 
-#include? "CodeSigning.local.xcconfig"
+// Default APP_GROUP_ID (requires DEVELOPMENT_TEAM to be set).
+// CodeSigning.local.xcconfig overrides this — include it last.
 APP_GROUP_ID = $(DEVELOPMENT_TEAM).com.typewhisper.mac
+#include? "CodeSigning.local.xcconfig"
