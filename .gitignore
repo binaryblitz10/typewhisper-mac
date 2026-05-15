@@ -45,3 +45,6 @@ CodeSigning.local.xcconfig
 
 # Git worktrees
 .worktrees/
+
+# Code signing setup
+setup-code-signing.sh
