@@ -727,6 +727,11 @@ final class DictationViewModel: ObservableObject {
     }
 
     private func setupBindings() {
+        hotkeyService.canStartDictation = { [weak self] in
+            guard let self else { return false }
+            return self.state != .processing && self.state != .inserting
+        }
+
         hotkeyService.onDictationStart = { [weak self] requestTimestamp in
             self?.startRecording(requestUptimeNanoseconds: requestTimestamp)
         }

@@ -197,9 +197,10 @@ struct IndicatorRecordingContent: View {
                 .accessibilityLabel(String(localized: "Recording timer"))
                 .accessibilityValue(formatDuration(viewModel.recordingDuration))
         case .waveform:
+            let isProcessing = viewModel.state == .processing || viewModel.state == .inserting
             AudioWaveformView(
                 audioLevel: viewModel.audioLevel,
-                isSetup: !viewModel.isRecordingInputReady || (viewModel.recordingDuration < 0.5 && viewModel.audioLevel < 0.05),
+                isSetup: isProcessing || !viewModel.isRecordingInputReady || (viewModel.recordingDuration < 0.5 && viewModel.audioLevel < 0.05),
                 compact: true
             )
         case .profile:

@@ -183,6 +183,10 @@ final class HotkeyService: ObservableObject {
     var onPushToTalkInterruption: (() -> Void)?
     var discardPushToTalkRecordingOnExtraKeyPress = false
 
+    /// If set, the hotkey service will query this before starting a new dictation.
+    /// Return false to prevent a new recording from starting (e.g. while processing).
+    var canStartDictation: (() -> Bool)?
+
     private var keyDownTime: Date?
     private var isActive = false
     private var activeSlotType: HotkeySlotType?
@@ -1335,7 +1339,7 @@ final class HotkeyService: ObservableObject {
             keyDownTime = nil
             pushToTalkInterruptionSignaled = false
             onDictationStop?()
-        } else {
+        } else if canStartDictation?() ?? true {
             let requestTimestamp = Self.requestTimestamp()
             activeSlotType = slotType
             activeGlobalHotkey = hotkey
@@ -1403,7 +1407,7 @@ final class HotkeyService: ObservableObject {
             keyDownTime = nil
             pushToTalkInterruptionSignaled = false
             onDictationStop?()
-        } else {
+        } else if canStartDictation?() ?? true {
             let requestTimestamp = Self.requestTimestamp()
             activeProfileId = profileId
             activeWorkflowId = nil
@@ -1455,7 +1459,7 @@ final class HotkeyService: ObservableObject {
             keyDownTime = nil
             pushToTalkInterruptionSignaled = false
             onDictationStop?()
-        } else {
+        } else if canStartDictation?() ?? true {
             let requestTimestamp = Self.requestTimestamp()
             activeProfileId = nil
             activeWorkflowId = workflowId
