@@ -1244,6 +1244,12 @@ final class DictationViewModel: ObservableObject {
         guard state == .recording, !isStopInFlight else { return }
         clearRecordingCancelWarning()
         isStopInFlight = true
+        // Signal the UI immediately so the waveform changes right away,
+        // before finalizeStopDictation finishes its async work (streaming,
+        // audio flush, etc.) which can take hundreds of milliseconds.
+        state = .processing
+        hotkeyService.activatePriorityEscCapture()
+        processingPhase = String(localized: "Transcribing...")
         Task {
             await finalizeStopDictation()
         }
@@ -1348,9 +1354,6 @@ final class DictationViewModel: ObservableObject {
             durationSeconds: audioDuration
         )))
 
-        state = .processing
-        hotkeyService.activatePriorityEscCapture()
-        processingPhase = String(localized: "Transcribing...")
         markActiveDictationSessionProcessingIfNeeded()
 
         let pipelineStartTime = CFAbsoluteTimeGetCurrent()
