@@ -167,7 +167,7 @@ struct IndicatorDot: View {
             .fill(Color.red)
             .frame(width: sizing.dotSize, height: sizing.dotSize)
             .scaleEffect(1.0 + CGFloat(audioLevel) * 0.8)
-            .shadow(color: .yellow.opacity(dotPulse ? 0.8 : 0.2), radius: dotPulse ? 6 : 2)
+            // .shadow(color: .yellow.opacity(dotPulse ? 0.8 : 0.2), radius: dotPulse ? 6 : 2)
             .accessibilityHidden(true)
     }
 }

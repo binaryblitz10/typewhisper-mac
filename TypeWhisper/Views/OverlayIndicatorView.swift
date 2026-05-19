@@ -70,7 +70,7 @@ struct OverlayIndicatorView: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.white.opacity(0.15), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.3), radius: 10, y: 5)
+        // .shadow(color: .black.opacity(0.3), radius: 10, y: 5)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: isTop ? .top : .bottom)
         .preferredColorScheme(.dark)
         .animation(.easeInOut(duration: 0.3), value: textExpanded)

@@ -173,7 +173,7 @@ struct MinimalIndicatorView: View {
             Capsule()
                 .stroke(strokeColor, lineWidth: 0)
         )
-        .shadow(color: shadowColor, radius: 10, y: 4)
+        // .shadow(color: shadowColor, radius: 10, y: 4)
     }
 
     @ViewBuilder
