@@ -106,19 +106,19 @@ final class ParakeetPluginTests: XCTestCase {
         XCTAssertEqual(plugin.huggingFaceToken, "hf_parakeet_saved")
     }
 
-    func testDisablesTranscriptPreviewFallback() throws {
+    func testAllowsTranscriptPreviewFallback() throws {
         let fallbackPolicy: any TranscriptPreviewFallbackPolicyProviding = ParakeetPlugin()
 
-        XCTAssertFalse(fallbackPolicy.allowsTranscriptPreviewFallback)
+        XCTAssertTrue(fallbackPolicy.allowsTranscriptPreviewFallback)
     }
 
-    func testProvidesLiveTranscriptionSessionCapability() throws {
+    func testUsesBatchFallbackForLivePreview() throws {
         let plugin = ParakeetPlugin()
-        let livePlugin: any LiveTranscriptionCapablePlugin = plugin
         let fallbackPolicy: any TranscriptPreviewFallbackPolicyProviding = plugin
 
-        XCTAssertTrue(livePlugin.supportsStreaming)
-        XCTAssertFalse(fallbackPolicy.allowsTranscriptPreviewFallback)
+        XCTAssertTrue(plugin.supportsStreaming)
+        XCTAssertTrue(fallbackPolicy.allowsTranscriptPreviewFallback)
+        XCTAssertNil(plugin as? any LiveTranscriptionCapablePlugin)
     }
 
     func testDictionaryTermsSupportReflectsStoredBoostingPreference() throws {

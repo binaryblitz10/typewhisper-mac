@@ -90,6 +90,16 @@ let package = Package(
             ]
         ),
         .target(
+            name: "LinearPlugin",
+            dependencies: ["TypeWhisperPluginSDK"],
+            path: "Plugins/LinearPlugin",
+            exclude: ["Tests"],
+            resources: [
+                .process("Localizable.xcstrings"),
+                .process("manifest.json"),
+            ]
+        ),
+        .target(
             name: "ObsidianPlugin",
             dependencies: ["TypeWhisperPluginSDK"],
             path: "Plugins/ObsidianPlugin",
@@ -147,6 +157,17 @@ let package = Package(
             resources: [
                 .process("Localizable.xcstrings"),
                 .process("manifest.json"),
+            ]
+        ),
+        .target(
+            name: "SmallestAIPlugin",
+            dependencies: ["TypeWhisperPluginSDK"],
+            path: "Plugins/SmallestAIPlugin",
+            exclude: ["Tests"],
+            resources: [
+                .process("Localizable.xcstrings"),
+                .process("manifest.json"),
+                .process("smallest.svg"),
             ]
         ),
         .target(
@@ -217,6 +238,15 @@ let package = Package(
             path: "Plugins/FileJobScriptPlugin/Tests"
         ),
         .testTarget(
+            name: "LinearPluginTests",
+            dependencies: [
+                "TypeWhisperPluginSDK",
+                "TypeWhisperPluginSDKTesting",
+                "LinearPlugin",
+            ],
+            path: "Plugins/LinearPlugin/Tests"
+        ),
+        .testTarget(
             name: "ObsidianPluginTests",
             dependencies: [
                 "TypeWhisperPluginSDK",
@@ -269,6 +299,15 @@ let package = Package(
                 "AssemblyAIPlugin",
             ],
             path: "Plugins/AssemblyAIPlugin/Tests"
+        ),
+        .testTarget(
+            name: "SmallestAIPluginTests",
+            dependencies: [
+                "TypeWhisperPluginSDK",
+                "TypeWhisperPluginSDKTesting",
+                "SmallestAIPlugin",
+            ],
+            path: "Plugins/SmallestAIPlugin/Tests"
         ),
         .testTarget(
             name: "WebhookPluginTests",

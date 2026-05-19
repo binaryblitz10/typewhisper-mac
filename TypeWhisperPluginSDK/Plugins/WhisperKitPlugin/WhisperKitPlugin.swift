@@ -6,7 +6,7 @@ import TypeWhisperPluginSDK
 // MARK: - Plugin Entry Point
 
 @objc(WhisperKitPlugin)
-final class WhisperKitPlugin: NSObject, TranscriptionEnginePlugin, TranscriptionModelCatalogProviding, DictionaryTermsCapabilityProviding, DictionaryTermsBudgetProviding, PluginSettingsActivityReporting, @unchecked Sendable {
+final class WhisperKitPlugin: NSObject, TranscriptionEnginePlugin, TranscriptionModelCatalogProviding, DictionaryTermsCapabilityProviding, DictionaryTermsBudgetProviding, PluginSettingsActivityReporting, PluginDownloadedModelManaging, @unchecked Sendable {
     static let pluginId = "com.typewhisper.whisperkit"
     static let pluginName = "WhisperKit"
     private static let maxConditioningPromptChars = 500
@@ -90,9 +90,43 @@ final class WhisperKitPlugin: NSObject, TranscriptionEnginePlugin, Transcription
                 displayName: def.displayName,
                 sizeDescription: def.sizeDescription,
                 languageCount: 99,
+                downloaded: isModelDownloaded(def),
                 loaded: def.id == loadedModelId
             )
         }
+    }
+
+    var downloadedModels: [PluginModelInfo] {
+        Self.availableModels
+            .filter { isModelDownloaded($0) }
+            .map { def in
+                PluginModelInfo(
+                    id: def.id,
+                    displayName: def.displayName,
+                    sizeDescription: def.sizeDescription,
+                    languageCount: 99,
+                    downloaded: true,
+                    loaded: def.id == loadedModelId
+                )
+            }
+    }
+
+    func deleteDownloadedModel(_ modelId: String) async throws {
+        guard let modelDef = Self.availableModels.first(where: { $0.id == modelId }) else { return }
+
+        if loadedModelId == modelId {
+            unloadModel(clearPersistence: true)
+        }
+        if _selectedModelId == modelId {
+            _selectedModelId = nil
+            host?.setUserDefault(nil, forKey: "selectedModel")
+        }
+        if host?.userDefault(forKey: "loadedModel") as? String == modelId {
+            host?.setUserDefault(nil, forKey: "loadedModel")
+        }
+
+        try deleteModelFiles(modelDef)
+        host?.notifyCapabilitiesChanged()
     }
 
     var selectedModelId: String? { _selectedModelId }
@@ -417,9 +451,11 @@ final class WhisperKitPlugin: NSObject, TranscriptionEnginePlugin, Transcription
         host?.notifyCapabilitiesChanged()
     }
 
-    fileprivate func deleteModelFiles(_ modelDef: WhisperModelDef) {
+    fileprivate func deleteModelFiles(_ modelDef: WhisperModelDef) throws {
         let modelPath = resolvedModelPath(for: modelDef)
-        try? FileManager.default.removeItem(at: modelPath)
+        if FileManager.default.fileExists(atPath: modelPath.path) {
+            try FileManager.default.removeItem(at: modelPath)
+        }
     }
 
     func restoreLoadedModel(allowDownloads: Bool = true) async {
@@ -1107,7 +1143,7 @@ private struct WhisperKitSettingsView: View {
         if case .ready(let loadedId) = modelState, loadedId == modelDef.id {
             plugin.unloadModel()
         }
-        plugin.deleteModelFiles(modelDef)
+        try? plugin.deleteModelFiles(modelDef)
         syncViewStateFromPlugin()
     }
 

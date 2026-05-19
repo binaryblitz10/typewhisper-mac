@@ -54,6 +54,24 @@ final class PluginManifestValidationTests: XCTestCase {
         }
     }
 
+    func testDownloadedModelManagingPluginReleasesRequireHost14() throws {
+        let manifestPaths = [
+            "TypeWhisperPluginSDK/Plugins/WhisperKitPlugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/Gemma4Plugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/Qwen3Plugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/VoxtralPlugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/GranitePlugin/manifest.json",
+            "TypeWhisperPluginSDK/Plugins/SupertonicPlugin/manifest.json",
+        ]
+
+        for relativePath in manifestPaths {
+            let manifestURL = TestSupport.repoRoot.appendingPathComponent(relativePath)
+            let data = try Data(contentsOf: manifestURL)
+            let manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
+            XCTAssertEqual(manifest.minHostVersion, "1.4.0", relativePath)
+        }
+    }
+
     func testOpenAIPluginManifestDeclaresCloudHostingWithoutAPIKeyRequirement() throws {
         let manifestURL = TestSupport.repoRoot.appendingPathComponent("TypeWhisperPluginSDK/Plugins/OpenAIPlugin/manifest.json")
         let data = try Data(contentsOf: manifestURL)
@@ -95,6 +113,262 @@ final class PluginManifestValidationTests: XCTestCase {
         XCTAssertEqual(manager.readinessRevision, initialRevision + 1)
         wait(for: [notification], timeout: 1)
         withExtendedLifetime(cancellable) {}
+    }
+}
+
+@MainActor
+final class PluginDownloadedModelManagementTests: XCTestCase {
+    private final class MockDownloadedModelPlugin: NSObject, TypeWhisperPlugin, PluginDownloadedModelManaging, PluginSettingsActivityReporting, @unchecked Sendable {
+        static let pluginId = "com.typewhisper.tests.downloaded-models"
+        static let pluginName = "Downloaded Models Test Plugin"
+
+        var downloadedModels: [PluginModelInfo]
+        var currentSettingsActivity: PluginSettingsActivity?
+        var shouldFailDeletion = false
+        var shouldSuspendDeletion = false
+        var deletionDidStart: (() -> Void)?
+        private var deletionResume: CheckedContinuation<Void, Never>?
+        private(set) var deletedModelIds: [String] = []
+        private(set) var didDeactivate = false
+
+        required override init() {
+            self.downloadedModels = []
+            super.init()
+        }
+
+        init(downloadedModels: [PluginModelInfo]) {
+            self.downloadedModels = downloadedModels
+            super.init()
+        }
+
+        func activate(host: HostServices) {}
+
+        func deactivate() {
+            didDeactivate = true
+        }
+
+        func deleteDownloadedModel(_ modelId: String) async throws {
+            if shouldFailDeletion {
+                throw NSError(
+                    domain: "PluginDownloadedModelManagementTests",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Deletion failed"]
+                )
+            }
+
+            deletionDidStart?()
+            if shouldSuspendDeletion {
+                await withCheckedContinuation { continuation in
+                    deletionResume = continuation
+                }
+            }
+
+            deletedModelIds.append(modelId)
+            downloadedModels.removeAll { $0.id == modelId }
+        }
+
+        func resumeDeletion() {
+            deletionResume?.resume()
+            deletionResume = nil
+        }
+    }
+
+    func testDeletingOneOfMultipleDownloadedModelsKeepsPluginEnabled() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory(prefix: "PluginDownloadedModels")
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let manager = PluginManager(appSupportDirectory: appSupportDirectory)
+        let plugin = MockDownloadedModelPlugin(downloadedModels: [
+            PluginModelInfo(id: "small", displayName: "Small", downloaded: true),
+            PluginModelInfo(id: "large", displayName: "Large", downloaded: true),
+        ])
+        manager.loadedPlugins = [
+            try makeLoadedPlugin(
+                plugin: plugin,
+                pluginId: "com.typewhisper.tests.downloaded.multiple",
+                directory: appSupportDirectory
+            )
+        ]
+
+        let initialRevision = manager.readinessRevision
+
+        try await manager.deleteDownloadedModel(
+            pluginId: "com.typewhisper.tests.downloaded.multiple",
+            modelId: "small"
+        )
+
+        XCTAssertEqual(plugin.deletedModelIds, ["small"])
+        XCTAssertEqual(plugin.downloadedModels.map(\.id), ["large"])
+        XCTAssertEqual(manager.loadedPlugins.first?.isEnabled, true)
+        XCTAssertFalse(plugin.didDeactivate)
+        XCTAssertEqual(manager.readinessRevision, initialRevision + 1)
+    }
+
+    func testDeletingLastDownloadedModelDisablesPlugin() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory(prefix: "PluginDownloadedModels")
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let pluginId = "com.typewhisper.tests.downloaded.single"
+        let defaultsKey = "plugin.\(pluginId).enabled"
+        let originalValue = UserDefaults.standard.object(forKey: defaultsKey)
+        defer { restoreDefault(key: defaultsKey, value: originalValue) }
+
+        let manager = PluginManager(appSupportDirectory: appSupportDirectory)
+        let plugin = MockDownloadedModelPlugin(downloadedModels: [
+            PluginModelInfo(id: "only", displayName: "Only", downloaded: true)
+        ])
+        manager.loadedPlugins = [
+            try makeLoadedPlugin(plugin: plugin, pluginId: pluginId, directory: appSupportDirectory)
+        ]
+
+        try await manager.deleteDownloadedModel(pluginId: pluginId, modelId: "only")
+
+        XCTAssertEqual(plugin.deletedModelIds, ["only"])
+        XCTAssertTrue(plugin.downloadedModels.isEmpty)
+        XCTAssertEqual(manager.loadedPlugins.first?.isEnabled, false)
+        XCTAssertTrue(plugin.didDeactivate)
+        XCTAssertEqual(UserDefaults.standard.bool(forKey: defaultsKey), false)
+    }
+
+    func testDeletionFailureDoesNotDisablePluginOrDropModel() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory(prefix: "PluginDownloadedModels")
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let pluginId = "com.typewhisper.tests.downloaded.failure"
+        let defaultsKey = "plugin.\(pluginId).enabled"
+        let originalValue = UserDefaults.standard.object(forKey: defaultsKey)
+        defer { restoreDefault(key: defaultsKey, value: originalValue) }
+
+        let manager = PluginManager(appSupportDirectory: appSupportDirectory)
+        let plugin = MockDownloadedModelPlugin(downloadedModels: [
+            PluginModelInfo(id: "only", displayName: "Only", downloaded: true)
+        ])
+        plugin.shouldFailDeletion = true
+        manager.loadedPlugins = [
+            try makeLoadedPlugin(plugin: plugin, pluginId: pluginId, directory: appSupportDirectory)
+        ]
+
+        do {
+            try await manager.deleteDownloadedModel(pluginId: pluginId, modelId: "only")
+            XCTFail("Expected deletion to fail")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "Deletion failed")
+        }
+
+        XCTAssertEqual(plugin.downloadedModels.map(\.id), ["only"])
+        XCTAssertEqual(manager.loadedPlugins.first?.isEnabled, true)
+        XCTAssertFalse(plugin.didDeactivate)
+    }
+
+    func testDeletionDuringPluginModelActivityThrowsBusyAndLeavesModel() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory(prefix: "PluginDownloadedModels")
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let pluginId = "com.typewhisper.tests.downloaded.busy"
+        let manager = PluginManager(appSupportDirectory: appSupportDirectory)
+        let plugin = MockDownloadedModelPlugin(downloadedModels: [
+            PluginModelInfo(id: "only", displayName: "Only", downloaded: true)
+        ])
+        plugin.currentSettingsActivity = PluginSettingsActivity(message: "Downloading model", progress: 0.5)
+        manager.loadedPlugins = [
+            try makeLoadedPlugin(plugin: plugin, pluginId: pluginId, directory: appSupportDirectory)
+        ]
+
+        do {
+            try await manager.deleteDownloadedModel(pluginId: pluginId, modelId: "only")
+            XCTFail("Expected deletion to be blocked while the plugin reports activity")
+        } catch PluginModelManagementError.pluginBusy(let name) {
+            XCTAssertEqual(name, "Downloaded Models Test Plugin")
+        } catch {
+            XCTFail("Expected pluginBusy, got \(error)")
+        }
+
+        XCTAssertEqual(plugin.downloadedModels.map(\.id), ["only"])
+        XCTAssertTrue(plugin.deletedModelIds.isEmpty)
+        XCTAssertEqual(manager.loadedPlugins.first?.isEnabled, true)
+        XCTAssertFalse(plugin.didDeactivate)
+    }
+
+    func testConcurrentDeletionForSamePluginThrowsBusy() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory(prefix: "PluginDownloadedModels")
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let pluginId = "com.typewhisper.tests.downloaded.concurrent"
+        let manager = PluginManager(appSupportDirectory: appSupportDirectory)
+        let plugin = MockDownloadedModelPlugin(downloadedModels: [
+            PluginModelInfo(id: "one", displayName: "One", downloaded: true),
+            PluginModelInfo(id: "two", displayName: "Two", downloaded: true),
+        ])
+        plugin.shouldSuspendDeletion = true
+        let deletionStarted = expectation(description: "first deletion started")
+        plugin.deletionDidStart = {
+            deletionStarted.fulfill()
+        }
+        manager.loadedPlugins = [
+            try makeLoadedPlugin(plugin: plugin, pluginId: pluginId, directory: appSupportDirectory)
+        ]
+
+        let firstDeletion = Task {
+            try await manager.deleteDownloadedModel(pluginId: pluginId, modelId: "one")
+        }
+        await fulfillment(of: [deletionStarted], timeout: 1)
+
+        do {
+            try await manager.deleteDownloadedModel(pluginId: pluginId, modelId: "two")
+            XCTFail("Expected concurrent deletion to be blocked")
+        } catch PluginModelManagementError.pluginBusy(let name) {
+            XCTAssertEqual(name, "Downloaded Models Test Plugin")
+        } catch {
+            XCTFail("Expected pluginBusy, got \(error)")
+        }
+
+        plugin.resumeDeletion()
+        try await firstDeletion.value
+
+        XCTAssertEqual(plugin.deletedModelIds, ["one"])
+        XCTAssertEqual(plugin.downloadedModels.map(\.id), ["two"])
+        XCTAssertEqual(manager.loadedPlugins.first?.isEnabled, true)
+        XCTAssertFalse(plugin.didDeactivate)
+    }
+
+    private func makeLoadedPlugin(
+        plugin: MockDownloadedModelPlugin,
+        pluginId: String,
+        directory: URL
+    ) throws -> LoadedPlugin {
+        let bundleURL = directory.appendingPathComponent("\(pluginId).bundle", isDirectory: true)
+        let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contentsURL, withIntermediateDirectories: true)
+        let infoPlist: [String: Any] = [
+            "CFBundleIdentifier": pluginId,
+            "CFBundleName": "Downloaded Models Test Plugin",
+            "CFBundlePackageType": "BNDL",
+            "CFBundleVersion": "1",
+        ]
+        let infoData = try PropertyListSerialization.data(fromPropertyList: infoPlist, format: .xml, options: 0)
+        try infoData.write(to: contentsURL.appendingPathComponent("Info.plist"))
+        let bundle = try XCTUnwrap(Bundle(url: bundleURL))
+        let manifest = PluginManifest(
+            id: pluginId,
+            name: "Downloaded Models Test Plugin",
+            version: "1.0.0",
+            principalClass: "MockDownloadedModelPlugin"
+        )
+        return LoadedPlugin(
+            manifest: manifest,
+            instance: plugin,
+            bundle: bundle,
+            sourceURL: bundleURL,
+            isEnabled: true
+        )
+    }
+
+    private func restoreDefault(key: String, value: Any?) {
+        if let value {
+            UserDefaults.standard.set(value, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 }
 
@@ -297,6 +571,37 @@ final class Gemma4PluginModelPolicyTests: XCTestCase {
         XCTAssertEqual(plugin.modelState, .notLoaded)
         XCTAssertEqual(plugin.currentDownloadProgress, 0)
         XCTAssertGreaterThanOrEqual(host.capabilitiesChangedCount, 2)
+    }
+
+    func testGemma4DeleteDownloadedModelClearsSelectionAndCache() async throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let model = try XCTUnwrap(Gemma4Plugin.modelDefinition(for: "gemma-4-e2b-it-4bit"))
+        let host = MockHostServices(
+            pluginDataDirectory: appSupportDirectory,
+            defaults: ["selectedLLMModel": model.id]
+        )
+        let plugin = Gemma4Plugin()
+        let modelDirectory = appSupportDirectory
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent(model.repoId, isDirectory: true)
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        try Data("partial".utf8).write(to: modelDirectory.appendingPathComponent("model.safetensors"))
+
+        plugin.activate(host: host)
+        try await Task.sleep(nanoseconds: 10_000_000)
+        host.setUserDefault(model.id, forKey: "loadedModel")
+
+        XCTAssertEqual(plugin.downloadedModels.map(\.id), [model.id])
+
+        try await plugin.deleteDownloadedModel(model.id)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: modelDirectory.path))
+        XCTAssertNil(plugin.selectedLLMModelId)
+        XCTAssertNil(host.userDefault(forKey: "selectedLLMModel"))
+        XCTAssertNil(host.userDefault(forKey: "loadedModel"))
+        XCTAssertGreaterThanOrEqual(host.capabilitiesChangedCount, 1)
     }
 
     func testGemma4ValidatesHuggingFaceTokenAgainstWhoAmIEndpoint() async throws {

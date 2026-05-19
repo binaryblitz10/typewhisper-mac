@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import TypeWhisper
 
 final class DictationViewModelIndicatorSettingsTests: XCTestCase {
@@ -225,6 +226,52 @@ final class IndicatorFullscreenSuppressionPolicyTests: XCTestCase {
         )
     }
 
+    func testSuppressesForeignAXFullscreenWindowThatOverlapsNotchStrip() {
+        let fullscreenWindow = CGRect(x: 0, y: 0, width: 3024, height: 1964)
+
+        XCTAssertTrue(
+            IndicatorFullscreenSuppressionPolicy.shouldSuppressIndicator(
+                screenFrame: notchedScreenFrame,
+                safeAreaTopInset: 74,
+                windowFrame: fullscreenWindow,
+                focusedWindowIsFullscreen: true,
+                frontmostBundleIdentifier: "com.apple.ScreenSharing",
+                appBundleIdentifier: "com.typewhisper.mac.dev"
+            )
+        )
+    }
+
+    func testDoesNotSuppressForeignMaximizedWindowWhenAXReportsNotFullscreen() {
+        let maximizedWindow = CGRect(x: 0, y: 0, width: 3024, height: 1964)
+
+        XCTAssertFalse(
+            IndicatorFullscreenSuppressionPolicy.shouldSuppressIndicator(
+                screenFrame: notchedScreenFrame,
+                safeAreaTopInset: 74,
+                windowFrame: maximizedWindow,
+                focusedWindowIsFullscreen: false,
+                frontmostBundleIdentifier: "com.google.Chrome",
+                appBundleIdentifier: "com.typewhisper.mac.dev"
+            )
+        )
+    }
+
+    func testDoesNotSuppressForeignMaximizedWindowWhenAXFullscreenIsUnavailable() {
+        let screenFrame = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let maximizedWindowBelowMenuBar = CGRect(x: 7, y: 46, width: 1497, height: 929)
+
+        XCTAssertFalse(
+            IndicatorFullscreenSuppressionPolicy.shouldSuppressIndicator(
+                screenFrame: screenFrame,
+                safeAreaTopInset: 32,
+                windowFrame: maximizedWindowBelowMenuBar,
+                focusedWindowIsFullscreen: nil,
+                frontmostBundleIdentifier: "com.microsoft.VSCode",
+                appBundleIdentifier: "com.typewhisper.mac.dev"
+            )
+        )
+    }
+
     func testDoesNotSuppressOnNonNotchedScreen() {
         let fullscreenWindow = CGRect(x: 0, y: 0, width: 3024, height: 1964)
 
@@ -350,6 +397,69 @@ final class MenuBarGroupingTests: XCTestCase {
             MenuBarMenuSection.updates.items,
             [.checkForUpdates]
         )
+    }
+}
+
+final class MenuBarIconStateTests: XCTestCase {
+    func testRecordingIndicatorIsActiveDuringDictationRecording() {
+        XCTAssertTrue(
+            MenuBarIconState.isRecordingActive(
+                dictationState: .recording,
+                recorderState: .idle
+            )
+        )
+    }
+
+    func testRecordingIndicatorIsActiveDuringRecorderRecording() {
+        XCTAssertTrue(
+            MenuBarIconState.isRecordingActive(
+                dictationState: .idle,
+                recorderState: .recording
+            )
+        )
+    }
+
+    func testRecordingIndicatorIsInactiveWhileRecorderFinalizes() {
+        XCTAssertFalse(
+            MenuBarIconState.isRecordingActive(
+                dictationState: .idle,
+                recorderState: .finalizing
+            )
+        )
+    }
+
+    func testRecordingIndicatorIsInactiveWithoutActiveRecording() {
+        XCTAssertFalse(
+            MenuBarIconState.isRecordingActive(
+                dictationState: .processing,
+                recorderState: .idle
+            )
+        )
+    }
+}
+
+final class MenuBarLogoMarkImageTests: XCTestCase {
+    func testBarLayoutFitsWithinMenuBarSlotWithVisibleGaps() {
+        let rects = MenuBarLogoMarkImage.barRects(in: CGRect(x: 0, y: 0, width: 18, height: 18))
+
+        XCTAssertEqual(rects.count, 5)
+        XCTAssertGreaterThanOrEqual(rects[0].minX, 0)
+        XCTAssertLessThanOrEqual(rects[4].maxX, 18)
+        XCTAssertGreaterThan(rects[2].height, rects[0].height)
+
+        for index in 1..<rects.count {
+            XCTAssertGreaterThanOrEqual(rects[index].minX - rects[index - 1].maxX, 1)
+        }
+    }
+
+    func testIdleImageIsTemplateAndRecordingImageIsOriginalRedArtwork() {
+        let idleImage = MenuBarLogoMarkImage.image(isRecordingActive: false)
+        let recordingImage = MenuBarLogoMarkImage.image(isRecordingActive: true)
+
+        XCTAssertEqual(idleImage.size, MenuBarLogoMarkImage.size)
+        XCTAssertEqual(recordingImage.size, MenuBarLogoMarkImage.size)
+        XCTAssertTrue(idleImage.isTemplate)
+        XCTAssertFalse(recordingImage.isTemplate)
     }
 }
 
