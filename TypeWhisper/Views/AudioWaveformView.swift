@@ -5,25 +5,42 @@ struct AudioWaveformView: View {
     let audioLevel: Float
     let isSetup: Bool
     var compact: Bool = false
+    var hasContext: Bool = false
 
-    private var barCount: Int { compact ? 5 : 8 }
-    private var barWidth: CGFloat { compact ? 3 : 3 }
-    private var barSpacing: CGFloat { compact ? 2 : 2 }
+    private var barCount: Int {
+        compact ? 5 : 8
+    }
+
+    private var barWidth: CGFloat {
+        compact ? 3 : 3
+    }
+
+    private var barSpacing: CGFloat {
+        compact ? 2 : 2
+    }
+
     private let minHeight: CGFloat = 2
-    private var maxHeight: CGFloat { compact ? 16 : 16 }
+    private var maxHeight: CGFloat {
+        compact ? 16 : 16
+    }
 
     @State private var bounceIndex = 0
     @State private var bounceTimer: Timer?
 
+    private var barColor: Color {
+        hasContext ? Color(hue: 0.61, saturation: 0.75, brightness: 0.85) : .primary
+    }
+
     var body: some View {
         HStack(spacing: barSpacing) {
-            ForEach(0..<barCount, id: \.self) { i in
+            ForEach(0 ..< barCount, id: \.self) { i in
                 RoundedRectangle(cornerRadius: 1.5)
-                    .fill(.primary)
+                    .fill(barColor)
                     .frame(width: barWidth, height: barHeight(for: i))
                     .animation(isSetup ? .easeInOut(duration: 0.3) : nil, value: bounceIndex)
             }
         }
+        .animation(.easeInOut(duration: 0.15), value: hasContext)
         .frame(height: maxHeight)
         .accessibilityHidden(true)
         .onChange(of: isSetup) { _, newValue in

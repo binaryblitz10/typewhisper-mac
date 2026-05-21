@@ -201,7 +201,8 @@ struct IndicatorRecordingContent: View {
             AudioWaveformView(
                 audioLevel: viewModel.audioLevel,
                 isSetup: isProcessing || !viewModel.isRecordingInputReady || (viewModel.recordingDuration < 0.5 && viewModel.audioLevel < 0.05),
-                compact: true
+                compact: true,
+                hasContext: viewModel.hasActiveWorkflow && viewModel.hasAttachedContext
             )
         case .profile:
             if let name = viewModel.activeRuleName {

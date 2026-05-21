@@ -239,7 +239,10 @@ final class DictationViewModel: ObservableObject {
     private let errorLogService: ErrorLogService
     private let mediaPlaybackService: MediaPlaybackService
     private let postProcessingPipeline: PostProcessingPipeline
-    private var matchedWorkflow: Workflow?
+    private var matchedWorkflow: Workflow? {
+        didSet { hasActiveWorkflow = matchedWorkflow != nil }
+    }
+    @Published private(set) var hasActiveWorkflow: Bool = false
     private var activeWorkflowMatch: WorkflowMatchResult?
     private var matchedProfile: Profile?
     private var activeRuleMatch: RuleMatchResult?
@@ -247,7 +250,10 @@ final class DictationViewModel: ObservableObject {
     private var forcedWorkflowId: UUID?
     private var capturedActiveApp: (name: String?, bundleId: String?, url: String?)?
     private var capturedSelectedText: String?
-    private var capturedCursorContext: CursorContext?
+    private var capturedCursorContext: CursorContext? {
+        didSet { hasAttachedContext = capturedCursorContext != nil }
+    }
+    @Published private(set) var hasAttachedContext: Bool = false
 
     private var cancellables = Set<AnyCancellable>()
     private var recordingTimer: Timer?
