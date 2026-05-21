@@ -46,6 +46,11 @@
 		AA00000000000000000357 /* WorkflowService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000357 /* WorkflowService.swift */; };
 		AA00000000000000000359 /* WorkflowsSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000359 /* WorkflowsSettingsView.swift */; };
 		AA00000000000000000360 /* WorkflowTextProcessingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000360 /* WorkflowTextProcessingService.swift */; };
+		AA00000000000000000400 /* ContextProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000400 /* ContextProvider.swift */; };
+		AA00000000000000000401 /* ContextCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000401 /* ContextCaptureSession.swift */; };
+		AA00000000000000000402 /* CursorContextProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000402 /* CursorContextProvider.swift */; };
+		AA00000000000000000403 /* ScreenOCRContextProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000403 /* ScreenOCRContextProvider.swift */; };
+		AA00000000000000000404 /* ContextPromptAssembly.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000404 /* ContextPromptAssembly.swift */; };
 		C23000000000000000000001 /* OpenAIPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000139 /* OpenAIPlugin.swift */; };
 		C23000000000000000000002 /* Qwen3ContextBiasFormatter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000321 /* Qwen3ContextBiasFormatter.swift */; };
 		C23000000000000000000003 /* Gemma4Plugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000295 /* Gemma4Plugin.swift */; };
@@ -521,6 +526,11 @@
 		BB00000000000000000357 /* WorkflowService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowService.swift; sourceTree = "<group>"; };
 		BB00000000000000000359 /* WorkflowsSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowsSettingsView.swift; sourceTree = "<group>"; };
 		BB00000000000000000360 /* WorkflowTextProcessingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowTextProcessingService.swift; sourceTree = "<group>"; };
+		BB00000000000000000400 /* ContextProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextProvider.swift; sourceTree = "<group>"; };
+		BB00000000000000000401 /* ContextCaptureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextCaptureSession.swift; sourceTree = "<group>"; };
+		BB00000000000000000402 /* CursorContextProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorContextProvider.swift; sourceTree = "<group>"; };
+		BB00000000000000000403 /* ScreenOCRContextProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenOCRContextProvider.swift; sourceTree = "<group>"; };
+		BB00000000000000000404 /* ContextPromptAssembly.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextPromptAssembly.swift; sourceTree = "<group>"; };
 		BB00000000000000000040 /* HTTPResponse.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPResponse.swift; sourceTree = "<group>"; };
 		BB00000000000000000041 /* HTTPRequestParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPRequestParser.swift; sourceTree = "<group>"; };
 		BB00000000000000000042 /* APIRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIRouter.swift; sourceTree = "<group>"; };
@@ -1309,6 +1319,7 @@
 				CC00000000000000000012 /* Cloud */,
 				CC00000000000000000014 /* LLM */,
 				CC00000000000000000010 /* HTTPServer */,
+				CC00000000000000000400 /* Context */,
 				BB00000000000000000009 /* ModelManagerService.swift */,
 				BB00000000000000000010 /* AudioFileService.swift */,
 				BB00000000000000000030 /* AudioRecordingService.swift */,
@@ -1505,6 +1516,18 @@
 				BB00000000000000000113 /* FoundationModelsProvider.swift */,
 			);
 			path = LLM;
+			sourceTree = "<group>";
+		};
+		CC00000000000000000400 /* Context */ = {
+			isa = PBXGroup;
+			children = (
+				BB00000000000000000400 /* ContextProvider.swift */,
+				BB00000000000000000401 /* ContextCaptureSession.swift */,
+				BB00000000000000000402 /* CursorContextProvider.swift */,
+				BB00000000000000000403 /* ScreenOCRContextProvider.swift */,
+				BB00000000000000000404 /* ContextPromptAssembly.swift */,
+			);
+			path = Context;
 			sourceTree = "<group>";
 		};
 		CC00000000000000000015 /* WebhookPlugin */ = {
@@ -3475,6 +3498,11 @@
 				AA00000000000000000066 /* ProfileService.swift in Sources */,
 				AA00000000000000000357 /* WorkflowService.swift in Sources */,
 				AA00000000000000000360 /* WorkflowTextProcessingService.swift in Sources */,
+				AA00000000000000000400 /* ContextProvider.swift in Sources */,
+				AA00000000000000000401 /* ContextCaptureSession.swift in Sources */,
+				AA00000000000000000402 /* CursorContextProvider.swift in Sources */,
+				AA00000000000000000403 /* ScreenOCRContextProvider.swift in Sources */,
+				AA00000000000000000404 /* ContextPromptAssembly.swift in Sources */,
 				AA00000000000000000067 /* ProfilesViewModel.swift in Sources */,
 				AA00000000000000000068 /* ProfilesSettingsView.swift in Sources */,
 				AA00000000000000000070 /* UpdateChecker.swift in Sources */,

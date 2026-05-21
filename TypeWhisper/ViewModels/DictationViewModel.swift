@@ -251,9 +251,22 @@ final class DictationViewModel: ObservableObject {
     private var capturedActiveApp: (name: String?, bundleId: String?, url: String?)?
     private var capturedSelectedText: String?
     private var capturedCursorContext: CursorContext? {
-        didSet { hasAttachedContext = capturedCursorContext != nil }
+        didSet { refreshHasAttachedContext() }
+    }
+    /// Session orchestrating async context providers (cursor, screen OCR, ...).
+    /// Lives for one recording. Always discarded after the AI request completes.
+    private var contextCaptureSession: ContextCaptureSession?
+    /// Set to true once an OCR provider has produced a non-empty payload for
+    /// the current session, so the waveform can enter its context-attached
+    /// state even when no cursor context was captured.
+    private var capturedScreenOCRContext: Bool = false {
+        didSet { refreshHasAttachedContext() }
     }
     @Published private(set) var hasAttachedContext: Bool = false
+
+    private func refreshHasAttachedContext() {
+        hasAttachedContext = (capturedCursorContext != nil) || capturedScreenOCRContext
+    }
 
     private var cancellables = Set<AnyCancellable>()
     private var recordingTimer: Timer?
@@ -1062,6 +1075,7 @@ final class DictationViewModel: ObservableObject {
             capturedCursorContext = cursorContextEnabled
                 ? textInsertionService.captureSurroundingCursorContext()
                 : nil
+            capturedScreenOCRContext = false
             activeAppIcon = nil
 
             if let forcedWorkflowId,
@@ -1075,6 +1089,11 @@ final class DictationViewModel: ObservableObject {
             } else {
                 applyRuleMatch(profileService.matchRule(bundleIdentifier: activeApp.bundleId, url: nil), activeApp: activeApp)
             }
+            // Spin up any per-workflow context providers (e.g. screen OCR) so
+            // their async work runs while the user is speaking. Cursor context
+            // is already captured synchronously above; the provider here just
+            // adapts it into the shared payload pipeline.
+            startContextCaptureSession()
             updateRecordingStartCuePayload(activeApp: activeApp)
             let contextMs = (CFAbsoluteTimeGetCurrent() - contextStartTimestamp) * 1000
 
@@ -1419,27 +1438,28 @@ final class DictationViewModel: ObservableObject {
                     return
                 }
 
-                let capturedContext = capturedCursorContext
-                let injectCursorContext = UserDefaults.standard.bool(forKey: UserDefaultsKeys.useSurroundingCursorContext)
-                    && capturedContext != nil
+                // Drain any async context providers (cursor, screen OCR, ...)
+                // before the LLM call. Cursor returns instantly; OCR may have
+                // a small remaining wait but is hidden behind recording length.
+                let attachedContexts = await collectAttachedContexts()
+                let hasAttachedContexts = !attachedContexts.isEmpty
 
                 let baseLLMHandler = buildLLMHandler(
                     translationTarget: translationTarget,
                     detectedLanguage: result.detectedLanguage,
                     configuredLanguage: language,
-                    injectCursorContext: injectCursorContext
+                    injectStructuredContext: hasAttachedContexts
                 )
 
                 let llmHandler: ((String) async throws -> String)? = {
-                    guard let base = baseLLMHandler,
-                          injectCursorContext,
-                          let ctx = capturedContext,
-                          ctx.leftContext != nil || ctx.rightContext != nil
-                    else {
+                    guard let base = baseLLMHandler, hasAttachedContexts else {
                         return baseLLMHandler
                     }
-                    return { [ctx] userText in
-                        try await base(Self.enhanceWithCursorContext(text: userText, context: ctx))
+                    return { userText in
+                        try await base(ContextPromptAssembly.enhance(
+                            userText: userText,
+                            contexts: attachedContexts
+                        ))
                     }
                 }()
 
@@ -1689,6 +1709,9 @@ final class DictationViewModel: ObservableObject {
         capturedActiveApp = nil
         capturedSelectedText = nil
         capturedCursorContext = nil
+        capturedScreenOCRContext = false
+        contextCaptureSession?.cancel()
+        contextCaptureSession = nil
         activeAppIcon = nil
         processingPhase = nil
         rawTranscriptForFallback = nil
@@ -1901,26 +1924,47 @@ final class DictationViewModel: ObservableObject {
 
     // MARK: - Shared Helpers
 
-    private static func enhanceWithCursorContext(text: String, context: CursorContext) -> String {
-        var contextBody = ""
-        if let left = context.leftContext {
-            contextBody += "Text before cursor:\n\(left)"
+    /// Maximum time to wait at LLM-time for async providers (notably OCR) to
+    /// settle. Capture starts at record-start, so by the time the user has
+    /// spoken anything it is usually already done; this only guards against
+    /// stalls.
+    private static let contextProviderCollectionTimeout: TimeInterval = 4.0
+
+    private func startContextCaptureSession() {
+        let session = ContextCaptureSession()
+
+        if let cursor = capturedCursorContext {
+            session.start(CursorContextProvider(snapshot: cursor))
         }
-        if let right = context.rightContext {
-            if !contextBody.isEmpty { contextBody += "\n\n" }
-            contextBody += "Text after cursor:\n\(right)"
+
+        if let workflow = matchedWorkflow, workflow.screenOCRContextEnabled {
+            let ocrProvider = ScreenOCRContextProvider()
+            session.start(ocrProvider)
+            logger.info("Screen OCR context provider started for workflow id=\(workflow.id.uuidString, privacy: .public)")
         }
-        guard !contextBody.isEmpty else { return text }
-        return "\(text)\n\n<context>\n\(contextBody)\n</context>"
+
+        contextCaptureSession = session
     }
 
-    /// Instruction appended to any system prompt when cursor context is injected into the user message.
-    /// Prevents the model from echoing or summarizing the <context> block.
-    private static let cursorContextSystemInstruction = """
-    \nIf the user message contains a <context> block, treat it only as surrounding document context \
-    to improve your response. Do not repeat, summarize, reference, or output the <context> block or its tags. \
-    Return only the final enhanced text.
-    """
+    /// Drain whatever providers were started for this recording. Bounded by
+    /// ``contextProviderCollectionTimeout`` so a hung OCR pass can't block
+    /// the workflow. Updates `capturedScreenOCRContext` (so the waveform's
+    /// context-attached state reflects late-arriving OCR) and returns the
+    /// payloads to attach to the AI request. The session is discarded after.
+    private func collectAttachedContexts() async -> [ContextPayload] {
+        guard let session = contextCaptureSession else { return [] }
+        contextCaptureSession = nil
+        let payloads = await session.collect(timeout: Self.contextProviderCollectionTimeout)
+        if payloads.contains(where: { $0.type == ScreenOCRContextProvider.type }) {
+            capturedScreenOCRContext = true
+        }
+        return payloads
+    }
+
+    /// Instruction appended to any system prompt when supplemental contexts
+    /// are injected into the user message. Prevents the model from echoing or
+    /// summarizing the <contexts> block.
+    private static let contextSystemInstruction = ContextPromptAssembly.systemInstruction
 
     /// Builds an LLM handler for the post-processing pipeline.
     /// Priority: workflow > translation > nil.
@@ -1928,13 +1972,13 @@ final class DictationViewModel: ObservableObject {
         translationTarget: String?,
         detectedLanguage: String?,
         configuredLanguage: String?,
-        injectCursorContext: Bool = false
+        injectStructuredContext: Bool = false
     ) -> ((String) async throws -> String)? {
         if let workflowHandler = buildWorkflowTextProcessingHandler(
             translationTarget: translationTarget,
             detectedLanguage: detectedLanguage,
             configuredLanguage: configuredLanguage,
-            injectCursorContext: injectCursorContext
+            injectStructuredContext: injectStructuredContext
         ) {
             return workflowHandler
         }
@@ -1947,8 +1991,8 @@ final class DictationViewModel: ObservableObject {
             let basePrompt = inlineEnabled
                 ? Self.buildInlineCommandSystemPrompt(baseContext: promptAction?.prompt)
                 : promptAction!.prompt
-            let finalPrompt = injectCursorContext
-                ? basePrompt + Self.cursorContextSystemInstruction
+            let finalPrompt = injectStructuredContext
+                ? basePrompt + Self.contextSystemInstruction
                 : basePrompt
             let providerOverride = promptAction?.providerType
             let modelOverride = promptAction?.cloudModel
@@ -1999,7 +2043,7 @@ final class DictationViewModel: ObservableObject {
         translationTarget: String?,
         detectedLanguage: String?,
         configuredLanguage: String?,
-        injectCursorContext: Bool = false
+        injectStructuredContext: Bool = false
     ) -> ((String) async throws -> String)? {
         guard let workflow = matchedWorkflow else { return nil }
 
@@ -2013,13 +2057,16 @@ final class DictationViewModel: ObservableObject {
             return nil
         }
 
+        let systemPromptSuffix = injectStructuredContext ? Self.contextSystemInstruction : nil
+
         return { text in
             try await workflowProcessor.process(
                 workflow: workflow,
                 text: text,
                 fallbackTranslationTarget: translationTarget,
                 detectedLanguage: detectedLanguage,
-                configuredLanguage: configuredLanguage
+                configuredLanguage: configuredLanguage,
+                systemPromptSuffix: systemPromptSuffix
             )
         }
     }

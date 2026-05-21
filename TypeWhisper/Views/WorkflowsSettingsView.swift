@@ -902,9 +902,56 @@ private struct WorkflowEditorPage: View {
                             }
 
                             Toggle(localizedAppText("Press Enter after inserting", de: "Nach dem Einfügen Enter drücken"), isOn: $draft.autoEnter)
+
+                            if draft.usesLLMProcessing {
+                                Divider()
+                                screenOCRContextSection
+                            }
                         }
                         .padding(.top, 4)
                     }
+                }
+            }
+        }
+    }
+
+    private var screenOCRContextSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(
+                localizedAppText("Screen OCR Context", de: "Bildschirm-OCR-Kontext"),
+                isOn: Binding(
+                    get: { draft.screenOCRContextEnabled },
+                    set: { newValue in
+                        draft.screenOCRContextEnabled = newValue
+                        if newValue {
+                            ScreenOCRContextProvider.requestScreenRecordingPermission()
+                        }
+                    }
+                )
+            )
+
+            Text(
+                localizedAppText(
+                    "When recording starts, capture the visible screen once with native OCR and attach the extracted text as supplemental context to the AI request. The screenshot and text are kept only for this single request, then discarded.",
+                    de: "Beim Aufnahmestart wird der sichtbare Bildschirm einmal per nativer OCR erfasst und der Text als ergänzender Kontext an die KI-Anfrage angehängt. Screenshot und Text werden nur für diese eine Anfrage behalten und danach verworfen."
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if draft.screenOCRContextEnabled,
+               !ScreenOCRContextProvider.hasScreenRecordingPermission() {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(
+                        localizedAppText(
+                            "Screen Recording permission is required. Enable TypeWhisper in System Settings → Privacy & Security → Screen Recording.",
+                            de: "Berechtigung für Bildschirmaufnahme erforderlich. Aktiviere TypeWhisper unter Systemeinstellungen → Datenschutz & Sicherheit → Bildschirmaufnahme."
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
                 }
             }
         }
@@ -2050,6 +2097,7 @@ struct WorkflowDraft {
     var customInstruction: String
     var outputFormat: String
     var autoEnter: Bool
+    var screenOCRContextEnabled: Bool
     var transcriptionEngineId: String?
     var transcriptionModelId: String?
 
@@ -2081,6 +2129,7 @@ struct WorkflowDraft {
         self.customInstruction = ""
         self.outputFormat = ""
         self.autoEnter = false
+        self.screenOCRContextEnabled = false
         self.transcriptionEngineId = nil
         self.transcriptionModelId = nil
         self.preservedBehaviorSettings = [:]
@@ -2111,6 +2160,7 @@ struct WorkflowDraft {
         self.customInstruction = behavior.settings["instruction"] ?? behavior.settings["goal"] ?? behavior.settings["prompt"] ?? ""
         self.outputFormat = output.format ?? ""
         self.autoEnter = output.autoEnter
+        self.screenOCRContextEnabled = workflow.screenOCRContextEnabled
         self.transcriptionEngineId = workflow.template == .dictation ? behavior.transcriptionEngineId : nil
         self.transcriptionModelId = workflow.template == .dictation ? behavior.transcriptionModelId : nil
         self.hotkeyBehavior = .startDictation
@@ -2419,6 +2469,11 @@ struct WorkflowDraft {
         settings.removeValue(forKey: "instruction")
         settings.removeValue(forKey: "goal")
         settings.removeValue(forKey: "prompt")
+        settings.removeValue(forKey: WorkflowBehavior.screenOCRContextEnabledSettingKey)
+
+        if usesLLMProcessing && screenOCRContextEnabled {
+            settings[WorkflowBehavior.screenOCRContextEnabledSettingKey] = "true"
+        }
 
         if let storedInputLanguage = inputLanguageSelection.storedValue(nilBehavior: .inheritGlobal) {
             settings[WorkflowBehavior.inputLanguageSettingKey] = storedInputLanguage

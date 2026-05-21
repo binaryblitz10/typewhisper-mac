@@ -88,7 +88,8 @@ struct WorkflowTextProcessingService {
         text: String,
         fallbackTranslationTarget: String? = nil,
         detectedLanguage: String? = nil,
-        configuredLanguage: String? = nil
+        configuredLanguage: String? = nil,
+        systemPromptSuffix: String? = nil
     ) async throws -> String {
         if workflow.usesAppleTranslate {
             return try await processAppleTranslate(
@@ -100,12 +101,16 @@ struct WorkflowTextProcessingService {
             )
         }
 
-        guard let systemPrompt = workflow.systemPrompt(
+        guard var systemPrompt = workflow.systemPrompt(
             fallbackTranslationTarget: fallbackTranslationTarget,
             detectedLanguage: detectedLanguage,
             configuredLanguage: configuredLanguage
         ) else {
             return text
+        }
+
+        if let systemPromptSuffix, !systemPromptSuffix.isEmpty {
+            systemPrompt += systemPromptSuffix
         }
 
         let behavior = workflow.behavior

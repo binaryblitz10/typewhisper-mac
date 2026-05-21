@@ -284,6 +284,7 @@ struct WorkflowBehavior: Codable, Equatable, Sendable {
     static let translationProcessorSettingKey = "translationProcessor"
     static let targetLanguageSettingKey = "targetLanguage"
     static let inputLanguageSettingKey = "inputLanguage"
+    static let screenOCRContextEnabledSettingKey = "screenOCRContextEnabled"
 
     var settings: [String: String]
     var fineTuning: String
@@ -549,6 +550,14 @@ extension Workflow {
 
     var isManuallyRunnable: Bool {
         usesAppleTranslate || systemPrompt() != nil || output.targetActionPluginId != nil
+    }
+
+    /// Whether this workflow opts into single-shot screen OCR as supplemental
+    /// AI context. Captured at recording start, attached to the AI request,
+    /// and discarded after the request completes — never persisted.
+    var screenOCRContextEnabled: Bool {
+        let raw = behavior.settings[WorkflowBehavior.screenOCRContextEnabledSettingKey]
+        return raw == "true" || raw == "1"
     }
 
     func systemPrompt(
