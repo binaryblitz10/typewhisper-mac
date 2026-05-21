@@ -1939,7 +1939,12 @@ final class DictationViewModel: ObservableObject {
 
         if let workflow = matchedWorkflow, workflow.screenOCRContextEnabled {
             let ocrProvider = ScreenOCRContextProvider()
-            session.start(ocrProvider)
+            session.start(ocrProvider) { [weak self] payload in
+                guard payload != nil else { return }
+                Task { @MainActor [weak self] in
+                    self?.capturedScreenOCRContext = true
+                }
+            }
             logger.info("Screen OCR context provider started for workflow id=\(workflow.id.uuidString, privacy: .public)")
         }
 

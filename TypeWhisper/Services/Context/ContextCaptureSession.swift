@@ -27,10 +27,14 @@ final class ContextCaptureSession: @unchecked Sendable {
     private var collected = false
 
     /// Launch a provider's capture immediately, in the background.
-    func start(_ provider: any ContextProvider) {
+    /// `onCapture` is called on an arbitrary thread as soon as the provider
+    /// finishes — use it to update live UI state before `collect` is called.
+    func start(_ provider: any ContextProvider, onCapture: ((ContextPayload?) -> Void)? = nil) {
         let typeIdentifier = provider.typeIdentifier
         let task = Task.detached(priority: .userInitiated) {
-            await provider.capture()
+            let payload = await provider.capture()
+            onCapture?(payload)
+            return payload
         }
         lock.lock()
         pending.append(PendingCapture(typeIdentifier: typeIdentifier, task: task))
