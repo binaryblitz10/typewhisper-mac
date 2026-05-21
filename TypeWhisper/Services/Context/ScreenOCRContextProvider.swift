@@ -157,9 +157,9 @@ struct ScreenOCRContextProvider: ContextProvider {
                 continuation.resume(returning: lines)
             }
             request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = false
-            // Best-effort multi-language detection — let Vision pick.
-            request.automaticallyDetectsLanguage = true
+            request.usesLanguageCorrection = true
+            request.recognitionLanguages = ["en-US"]
+            request.automaticallyDetectsLanguage = false
 
             let handler = VNImageRequestHandler(cgImage: scaled, options: [:])
             DispatchQueue.global(qos: .userInitiated).async {
