@@ -21,6 +21,8 @@ final class ServiceContainer: ObservableObject {
     let mediaPlaybackService: MediaPlaybackService
     let dictionaryService: DictionaryService
     let snippetService: SnippetService
+    let userDataSyncStore: TypeWhisperUserDataSyncStore
+    let cloudFolderSyncController: CloudFolderSyncController
     let soundService: SoundService
     let audioDeviceService: AudioDeviceService
     let promptActionService: PromptActionService
@@ -90,6 +92,10 @@ final class ServiceContainer: ObservableObject {
         mediaPlaybackService = MediaPlaybackService()
         dictionaryService = DictionaryService()
         snippetService = SnippetService()
+        userDataSyncStore = TypeWhisperUserDataSyncStore(
+            dictionaryService: dictionaryService,
+            snippetService: snippetService
+        )
         soundService = SoundService()
         audioDeviceService = AudioDeviceService(
             inputActivationGuard: inputActivationGuard
@@ -115,6 +121,10 @@ final class ServiceContainer: ObservableObject {
         errorLogService = ErrorLogService()
         licenseService = LicenseService()
         supporterDiscordService = SupporterDiscordService(licenseService: licenseService)
+        cloudFolderSyncController = CloudFolderSyncController(
+            licenseService: licenseService,
+            syncStore: userDataSyncStore
+        )
 
         // ViewModels (created before HTTP API so DictationViewModel is available)
         fileTranscriptionViewModel = FileTranscriptionViewModel(
@@ -155,6 +165,11 @@ final class ServiceContainer: ObservableObject {
             errorLogService: errorLogService,
             mediaPlaybackService: mediaPlaybackService
         )
+        audioRecorderViewModel = AudioRecorderViewModel(
+            recorderService: audioRecorderService,
+            modelManager: modelManagerService,
+            dictionaryService: dictionaryService
+        )
 
         // HTTP API
         let apiAuthenticator = LocalAPIAuthenticator()
@@ -166,7 +181,8 @@ final class ServiceContainer: ObservableObject {
             historyService: historyService,
             workflowService: workflowService,
             dictionaryService: dictionaryService,
-            dictationViewModel: dictationViewModel
+            dictationViewModel: dictationViewModel,
+            audioRecorderViewModel: audioRecorderViewModel
         )
         handlers.register(on: router)
         httpServer = HTTPServer(router: router)
@@ -194,7 +210,6 @@ final class ServiceContainer: ObservableObject {
             promptProcessingService: promptProcessingService,
             profileService: profileService
         )
-        audioRecorderViewModel = AudioRecorderViewModel(recorderService: audioRecorderService, modelManager: modelManagerService, dictionaryService: dictionaryService)
         watchFolderViewModel = WatchFolderViewModel(
             watchFolderService: watchFolderService,
             modelManager: modelManagerService
@@ -230,6 +245,7 @@ final class ServiceContainer: ObservableObject {
         fileTranscriptionViewModel.observePluginManager()
         dictationRecoveryViewModel.observePluginManager()
         settingsViewModel.observePluginManager()
+        audioRecorderViewModel.observePluginManager()
         watchFolderViewModel.observePluginManager()
     }
 
@@ -255,10 +271,13 @@ final class ServiceContainer: ObservableObject {
 
         // Re-restore provider selection now that plugins are loaded
         modelManagerService.restoreProviderSelection()
+        audioRecorderViewModel.reconcileSelectionWithAvailablePlugins()
         watchFolderViewModel.reconcileSelectionWithAvailablePlugins()
 
         // Validate LLM provider selection against loaded plugins
         promptProcessingService.validateSelectionAfterPluginLoad()
+
+        pluginRegistryService.checkForUpdatesInBackground()
 
         // Start memory service
         memoryService.startListening()

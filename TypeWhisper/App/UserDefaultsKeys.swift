@@ -17,6 +17,7 @@ enum UserDefaultsKeys {
     static let preserveClipboard = "preserveClipboard"
     static let mediaPauseEnabled = "mediaPauseEnabled"
     static let transcribeShortQuietClipsAggressively = "transcribeShortQuietClipsAggressively"
+    static let microphoneBoostEnabled = "microphoneBoostEnabled"
 
     // MARK: - Hotkey (JSON-encoded UnifiedHotkey per slot, legacy mirror for first binding)
     static let hybridHotkey = "hybridHotkey"
@@ -125,6 +126,7 @@ enum UserDefaultsKeys {
     // MARK: - Formatting
 
     static let appFormattingEnabled = "appFormattingEnabled"
+    static let transcriptionNumberNormalizationEnabled = "transcriptionNumberNormalizationEnabled"
     static let dictationPunctuationProfiles = "dictationPunctuationProfiles"
 
     // MARK: - Accessibility
@@ -135,6 +137,7 @@ enum UserDefaultsKeys {
     // MARK: - Plugin Registry
 
     static let pluginRegistryLastFetch = "pluginRegistryLastFetch"
+    static let selectedIntegrationTab = "selectedIntegrationTab"
 
     // MARK: - Recorder
 
@@ -142,6 +145,8 @@ enum UserDefaultsKeys {
     static let recorderSystemAudioEnabled = "recorderSystemAudioEnabled"
     static let recorderOutputFormat = "recorderOutputFormat"
     static let recorderTranscriptionEnabled = "recorderTranscriptionEnabled"
+    static let recorderTranscriptionEngine = "recorderTranscriptionEngine"
+    static let recorderTranscriptionModel = "recorderTranscriptionModel"
     static let recorderMicDuckingMode = "recorderMicDuckingMode"
     static let recorderTrackMode = "recorderTrackMode"
 

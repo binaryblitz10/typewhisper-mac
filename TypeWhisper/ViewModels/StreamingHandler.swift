@@ -7,6 +7,10 @@ final class StreamingHandler: @unchecked Sendable {
     private struct SharedState {
         var confirmedStreamingText = ""
         var liveSessionHandle: ModelManagerService.LiveTranscriptionSessionHandle?
+        var normalizeNumbers: Bool?
+        var configuredLanguage: String?
+        var configuredLanguageCandidates: [String] = []
+        var task: TranscriptionTask = .transcribe
         var livePreviewAudioGate = LivePreviewAudioGate()
         var sampleCursor = 0
     }
@@ -92,6 +96,7 @@ final class StreamingHandler: @unchecked Sendable {
         languageSelection: LanguageSelection,
         task: TranscriptionTask,
         cloudModelOverride: String?,
+        normalizeNumbers: Bool? = nil,
         allowLiveTranscription: Bool,
         stateCheck: @escaping @MainActor @Sendable () -> Bool
     ) {
@@ -110,6 +115,12 @@ final class StreamingHandler: @unchecked Sendable {
         }
 
         resetStreamingState()
+        sharedState.withLock { state in
+            state.normalizeNumbers = normalizeNumbers
+            state.configuredLanguage = languageSelection.requestedLanguage
+            state.configuredLanguageCandidates = languageSelection.selectedCodes
+            state.task = task
+        }
         onStreamingStateChange?(true)
 
         streamingTask = Task { [weak self] in
@@ -155,6 +166,7 @@ final class StreamingHandler: @unchecked Sendable {
                 languageSelection: languageSelection,
                 task: task,
                 cloudModelOverride: cloudModelOverride,
+                normalizeNumbers: normalizeNumbers,
                 stateCheck: stateCheck
             )
         }
@@ -178,7 +190,11 @@ final class StreamingHandler: @unchecked Sendable {
             }
             let result = try await modelManager.finishLiveTranscriptionSession(
                 handle,
-                bufferedDuration: bufferedDurationProvider()
+                bufferedDuration: bufferedDurationProvider(),
+                language: sharedState.withLock { $0.configuredLanguage },
+                languageCandidates: sharedState.withLock { $0.configuredLanguageCandidates },
+                task: sharedState.withLock { $0.task },
+                normalizeNumbers: sharedState.withLock { $0.normalizeNumbers }
             )
             clearStreamingState(notifyStreamingStopped: true)
 
@@ -188,7 +204,7 @@ final class StreamingHandler: @unchecked Sendable {
             return result
         } catch {
             logger.warning("Finalizing live transcription failed: \(error.localizedDescription)")
-            await handle.session.cancel()
+            await modelManager.cancelLiveTranscriptionSession(handle)
             clearStreamingState(notifyStreamingStopped: true)
             return nil
         }
@@ -205,8 +221,9 @@ final class StreamingHandler: @unchecked Sendable {
             return handle
         }
         if let handle {
+            let modelManager = self.modelManager
             Task {
-                await handle.session.cancel()
+                await modelManager.cancelLiveTranscriptionSession(handle)
             }
         }
 
@@ -239,6 +256,7 @@ final class StreamingHandler: @unchecked Sendable {
         languageSelection: LanguageSelection,
         task: TranscriptionTask,
         cloudModelOverride: String?,
+        normalizeNumbers: Bool?,
         stateCheck: @escaping @MainActor @Sendable () -> Bool
     ) async {
         try? await Task.sleep(for: Self.fallbackPollInterval)
@@ -258,6 +276,7 @@ final class StreamingHandler: @unchecked Sendable {
                         engineOverrideId: engineOverrideId,
                         cloudModelOverride: cloudModelOverride,
                         prompt: streamPrompt,
+                        normalizeNumbers: normalizeNumbers,
                         onProgress: { [weak self] text in
                             guard let self, !Task.isCancelled else { return false }
                             _ = self.processPreviewUpdate(text, audioGate: nil, persist: false)
@@ -285,6 +304,10 @@ final class StreamingHandler: @unchecked Sendable {
         sharedState.withLock { state in
             state.confirmedStreamingText = ""
             state.liveSessionHandle = nil
+            state.normalizeNumbers = nil
+            state.configuredLanguage = nil
+            state.configuredLanguageCandidates = []
+            state.task = .transcribe
             state.sampleCursor = 0
         }
         progressText.withLock { $0 = "" }

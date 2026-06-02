@@ -179,6 +179,18 @@ struct AdvancedSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                Toggle(
+                    localizedAppText("Whisper Mode (AGC)", de: "Whisper-Modus (AGC)"),
+                    isOn: $dictation.microphoneBoostEnabled
+                )
+
+                Text(localizedAppText(
+                    "Automatically raises quiet microphone input before transcription. Useful for low-gain microphones, but very noisy rooms may sound louder too.",
+                    de: "Hebt leise Mikrofoneingaben vor der Transkription automatisch an. Hilft bei Mikrofonen mit niedrigem Pegel, kann in lauten Räumen aber auch Störgeräusche verstärken."
+                ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 if speechFeedbackService.hasAvailableProviders {
                     Toggle(String(localized: "Spoken feedback"), isOn: $dictation.spokenFeedbackEnabled)
 
@@ -452,11 +464,13 @@ struct AdvancedSettingsView: View {
 
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            do {
-                try errorLogService.exportDiagnostics(to: url)
-            } catch {
-                diagnosticsExportErrorMessage = error.localizedDescription
-                showDiagnosticsExportError = true
+            Task { @MainActor in
+                do {
+                    try await errorLogService.exportDiagnostics(to: url)
+                } catch {
+                    diagnosticsExportErrorMessage = error.localizedDescription
+                    showDiagnosticsExportError = true
+                }
             }
         }
     }

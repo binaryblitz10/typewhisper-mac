@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import TypeWhisper
 
@@ -104,6 +105,95 @@ final class SoundServiceTests: XCTestCase {
         XCTAssertEqual(SoundChoice.installedCustomSounds(), [])
     }
 
+    @MainActor
+    func testPlayRecordingStartedUsesFilePlaybackInsteadOfPreviewSoundResolver() {
+        let storedDefaults = captureSoundDefaults()
+        defer { restoreSoundDefaults(storedDefaults) }
+
+        UserDefaults.standard.removeObject(forKey: UserDefaultsKeys.soundRecordingStarted)
+
+        let oneShotPlayer = SpyOneShotSoundPlayer()
+        let service = PreviewSoundResolverSpy(oneShotPlayer: oneShotPlayer)
+
+        service.play(.recordingStarted, enabled: true)
+
+        XCTAssertEqual(oneShotPlayer.playedURLs.map(\.lastPathComponent), ["recording_start.wav"])
+        XCTAssertTrue(service.resolvedChoices.isEmpty)
+    }
+
+    @MainActor
+    func testPlayRecordingStartedUsesFilePlaybackForCustomSound() throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        let storedDefaults = captureSoundDefaults()
+        defer {
+            restoreSoundDefaults(storedDefaults)
+            AppConstants.testAppSupportDirectoryOverride = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        AppConstants.testAppSupportDirectoryOverride = appSupportDirectory
+        let oneShotPlayer = SpyOneShotSoundPlayer()
+        let service = PreviewSoundResolverSpy(oneShotPlayer: oneShotPlayer)
+        let filename = try service.importCustomSound(from: testSoundURL)
+
+        service.updateChoice(for: .recordingStarted, choice: .custom(filename))
+        service.play(.recordingStarted, enabled: true)
+
+        XCTAssertEqual(oneShotPlayer.playedURLs.map(\.lastPathComponent), [filename])
+        XCTAssertTrue(service.resolvedChoices.isEmpty)
+    }
+
+    @MainActor
+    func testPlayRecordingStartedUsesFilePlaybackForSystemSound() throws {
+        let storedDefaults = captureSoundDefaults()
+        defer { restoreSoundDefaults(storedDefaults) }
+
+        let systemSoundName = try XCTUnwrap(
+            SoundChoice.systemSounds.first { name in
+                FileManager.default.fileExists(atPath: "/System/Library/Sounds/\(name).aiff")
+            }
+        )
+        let oneShotPlayer = SpyOneShotSoundPlayer()
+        let service = PreviewSoundResolverSpy(oneShotPlayer: oneShotPlayer)
+
+        service.updateChoice(for: .recordingStarted, choice: .system(systemSoundName))
+        service.play(.recordingStarted, enabled: true)
+
+        XCTAssertEqual(oneShotPlayer.playedURLs.map(\.lastPathComponent), ["\(systemSoundName).aiff"])
+        XCTAssertTrue(service.resolvedChoices.isEmpty)
+    }
+
+    @MainActor
+    func testPlaybackDurationFallsBackToSoundResolverWhenFileDurationUnavailable() throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory()
+        let storedDefaults = captureSoundDefaults()
+        defer {
+            restoreSoundDefaults(storedDefaults)
+            AppConstants.testAppSupportDirectoryOverride = nil
+            TestSupport.remove(appSupportDirectory)
+        }
+
+        AppConstants.testAppSupportDirectoryOverride = appSupportDirectory
+        let soundsDirectory = SoundChoice.customSoundsDirectory
+        try FileManager.default.createDirectory(at: soundsDirectory, withIntermediateDirectories: true)
+        let filename = "invalid.wav"
+        try Data("not a playable audio file".utf8).write(to: soundsDirectory.appendingPathComponent(filename))
+        let service = PreviewSoundResolverSpy()
+        service.updateChoice(for: .recordingStarted, choice: .custom(filename))
+
+        XCTAssertNil(service.playbackDuration(for: .recordingStarted, enabled: true))
+        XCTAssertEqual(service.resolvedChoices, [.custom(filename)])
+    }
+
+    @MainActor
+    func testPreviewStillUsesPreviewSoundResolver() {
+        let service = PreviewSoundResolverSpy()
+
+        service.preview(.bundled("recording_start"))
+
+        XCTAssertEqual(service.resolvedChoices, [.bundled("recording_start")])
+    }
+
     private var testSoundURL: URL {
         TestSupport.repoRoot.appendingPathComponent("TypeWhisper/Resources/Sounds/error.wav", isDirectory: false)
     }
@@ -123,6 +213,26 @@ final class SoundServiceTests: XCTestCase {
             } else {
                 UserDefaults.standard.removeObject(forKey: key)
             }
+        }
+    }
+
+    @MainActor
+    private final class PreviewSoundResolverSpy: SoundService {
+        private(set) var resolvedChoices: [SoundChoice] = []
+
+        override func sound(for choice: SoundChoice) -> NSSound? {
+            resolvedChoices.append(choice)
+            return nil
+        }
+    }
+
+    @MainActor
+    private final class SpyOneShotSoundPlayer: OneShotSoundPlaying {
+        private(set) var playedURLs: [URL] = []
+
+        func play(url: URL) -> Bool {
+            playedURLs.append(url)
+            return true
         }
     }
 

@@ -160,6 +160,16 @@ let package = Package(
             ]
         ),
         .target(
+            name: "Reson8Plugin",
+            dependencies: ["TypeWhisperPluginSDK"],
+            path: "Plugins/Reson8Plugin",
+            exclude: ["Tests"],
+            resources: [
+                .process("Localizable.xcstrings"),
+                .process("manifest.json"),
+            ]
+        ),
+        .target(
             name: "SmallestAIPlugin",
             dependencies: ["TypeWhisperPluginSDK"],
             path: "Plugins/SmallestAIPlugin",
@@ -219,6 +229,13 @@ let package = Package(
                 "ParakeetPlugin",
             ],
             path: "Plugins/ParakeetPlugin/Tests"
+        ),
+        .testTarget(
+            name: "SpeechAnalyzerPluginTests",
+            dependencies: [
+                "TypeWhisperPluginSDK",
+            ],
+            path: "Plugins/SpeechAnalyzerPlugin/Tests"
         ),
         .testTarget(
             name: "FillerWordsPluginTests",
@@ -299,6 +316,14 @@ let package = Package(
                 "AssemblyAIPlugin",
             ],
             path: "Plugins/AssemblyAIPlugin/Tests"
+        ),
+        .testTarget(
+            name: "Reson8PluginTests",
+            dependencies: [
+                "TypeWhisperPluginSDK",
+                "Reson8Plugin",
+            ],
+            path: "Plugins/Reson8Plugin/Tests"
         ),
         .testTarget(
             name: "SmallestAIPluginTests",

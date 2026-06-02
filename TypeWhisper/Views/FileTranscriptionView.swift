@@ -90,7 +90,7 @@ struct FileTranscriptionView: View {
                         ForEach(watchFolder.availableEngines, id: \.providerId) { engine in
                             HStack {
                                 Text(engine.providerDisplayName)
-                                if !engine.isConfigured {
+                                if !watchFolder.canPrepareForTranscription(engine) {
                                     Text("(\(String(localized: "not ready")))")
                                         .foregroundStyle(.secondary)
                                 }
@@ -115,7 +115,8 @@ struct FileTranscriptionView: View {
                         selection: $watchFolder.languageSelection,
                         availableLanguages: localizedAppLanguageOptions(for: watchFolder.selectedEngineSupportedLanguages)
                             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                            .map { (code: $0.code, name: $0.name) }
+                            .map { (code: $0.code, name: $0.name) },
+                        hintBehavior: LanguageSelectionHintBehavior(engine: watchFolder.resolvedEngine)
                     )
                 }
 
@@ -394,7 +395,8 @@ struct FileTranscriptionView: View {
 
             LanguageSelectionEditor(
                 selection: $viewModel.languageSelection,
-                availableLanguages: fileTranscriptionLanguageOptions
+                availableLanguages: fileTranscriptionLanguageOptions,
+                hintBehavior: LanguageSelectionHintBehavior(engine: viewModel.resolvedEngine)
             )
 
             HStack {
@@ -507,6 +509,9 @@ struct FileTranscriptionView: View {
         HStack {
             Text(engine.providerDisplayName)
             if !viewModel.canUseForTranscription(engine) {
+                Text("(\(String(localized: "not ready")))")
+                    .foregroundStyle(.secondary)
+            } else if !viewModel.canPrepareForTranscription(engine) {
                 Text("(\(String(localized: "not ready")))")
                     .foregroundStyle(.secondary)
             }

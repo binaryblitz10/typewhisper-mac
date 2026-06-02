@@ -1,0 +1,156 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "API Key" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API-Schlüssel"
+          }
+        }
+      }
+    },
+    "API keys are stored securely in the Keychain" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "API-Schlüssel werden sicher im Schlüsselbund gespeichert"
+          }
+        }
+      }
+    },
+    "Advanced" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erweitert"
+          }
+        }
+      }
+    },
+    "Custom Auth Header" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eigener Auth-Header"
+          }
+        }
+      }
+    },
+    "Custom Base URL" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eigene Basis-URL"
+          }
+        }
+      }
+    },
+    "Default model" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Standardmodell"
+          }
+        }
+      }
+    },
+    "For LiveKit gateway or custom proxies" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Für LiveKit-Gateway oder eigene Proxies"
+          }
+        }
+      }
+    },
+    "Invalid API Key" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ungültiger API-Schlüssel"
+          }
+        }
+      }
+    },
+    "Model" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Modell"
+          }
+        }
+      }
+    },
+    "No custom models yet — using default model" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Noch keine eigenen Modelle — Standardmodell wird verwendet"
+          }
+        }
+      }
+    },
+    "Refresh" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktualisieren"
+          }
+        }
+      }
+    },
+    "Remove" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Entfernen"
+          }
+        }
+      }
+    },
+    "Save" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speichern"
+          }
+        }
+      }
+    },
+    "Valid API Key" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gültiger API-Schlüssel"
+          }
+        }
+      }
+    },
+    "Validating..." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wird überprüft..."
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

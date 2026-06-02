@@ -68,6 +68,26 @@ public enum PluginHTTPClient {
         try await data(for: request, allowsRetry: true)
     }
 
+    public static func data(
+        for request: URLRequest,
+        resourceTimeout: TimeInterval?
+    ) async throws -> (Data, URLResponse) {
+        guard let resourceTimeout, resourceTimeout > longRunningResourceTimeout else {
+            return try await data(for: request, allowsRetry: true)
+        }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = resourceTimeout
+        config.timeoutIntervalForResource = resourceTimeout
+        let session = sessionFactory(config)
+        defer { session.finishTasksAndInvalidate() }
+
+        let method = request.httpMethod ?? "GET"
+        let url = request.url?.absoluteString ?? "unknown"
+        logger.info("\(method) \(url) (dedicated session, resourceTimeout=\(resourceTimeout))")
+        return try await session.data(for: request)
+    }
+
     public static func resetSharedSession(reason: String? = nil) {
         let session = lock.withLock {
             let existing = sharedSession
@@ -531,6 +551,8 @@ public struct PluginOpenAIChatHelper: Sendable {
         )
     }
 
+    // Keep the pre-requestTimeout symbols available so already-installed plugin
+    // bundles continue to load after the helper grew the timeout parameter.
     public func process(
         apiKey: String,
         model: String,
@@ -540,6 +562,30 @@ public struct PluginOpenAIChatHelper: Sendable {
         maxOutputTokenParameter: String = "max_tokens",
         reasoningEffort: String? = nil,
         temperature: Double?
+    ) async throws -> String {
+        try await process(
+            apiKey: apiKey,
+            model: model,
+            systemPrompt: systemPrompt,
+            userText: userText,
+            maxOutputTokens: maxOutputTokens,
+            maxOutputTokenParameter: maxOutputTokenParameter,
+            reasoningEffort: reasoningEffort,
+            temperature: temperature,
+            requestTimeout: 30
+        )
+    }
+
+    public func process(
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        userText: String,
+        maxOutputTokens: Int? = 4096,
+        maxOutputTokenParameter: String = "max_tokens",
+        reasoningEffort: String? = nil,
+        temperature: Double?,
+        requestTimeout: TimeInterval
     ) async throws -> String {
         let endpoint = "\(baseURL)\(chatEndpoint)"
         guard let url = URL(string: endpoint) else {
@@ -560,10 +606,10 @@ public struct PluginOpenAIChatHelper: Sendable {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30
+        request.timeoutInterval = requestTimeout
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
-        let (data, response) = try await PluginHTTPClient.data(for: request)
+        let (data, response) = try await PluginHTTPClient.data(for: request, resourceTimeout: requestTimeout)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw PluginChatError.networkError("Invalid response")
@@ -633,7 +679,31 @@ public struct PluginOpenAIChatHelper: Sendable {
             maxOutputTokens: maxOutputTokens,
             maxOutputTokenParameter: maxOutputTokenParameter,
             reasoningEffort: nil,
-            temperature: temperature
+            temperature: temperature,
+            requestTimeout: 30
+        )
+    }
+
+    public func process(
+        apiKey: String,
+        model: String,
+        systemPrompt: String,
+        userText: String,
+        maxOutputTokens: Int? = 4096,
+        maxOutputTokenParameter: String = "max_tokens",
+        temperature: Double?,
+        requestTimeout: TimeInterval
+    ) async throws -> String {
+        try await process(
+            apiKey: apiKey,
+            model: model,
+            systemPrompt: systemPrompt,
+            userText: userText,
+            maxOutputTokens: maxOutputTokens,
+            maxOutputTokenParameter: maxOutputTokenParameter,
+            reasoningEffort: nil,
+            temperature: temperature,
+            requestTimeout: requestTimeout
         )
     }
 

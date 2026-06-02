@@ -827,6 +827,8 @@ private struct WorkflowEditorPage: View {
                     )
                 }
 
+                workflowMicrophoneBoostSection
+
                 if draft.usesLLMProcessing {
                     WorkflowTextEditorField(
                         title: localizedAppText("Fine-Tuning", de: "Feinabstimmung"),
@@ -900,6 +902,10 @@ private struct WorkflowEditorPage: View {
 
                                 Divider()
                             }
+
+                            numberNormalizationSection
+
+                            Divider()
 
                             Toggle(localizedAppText("Press Enter after inserting", de: "Nach dem Einfügen Enter drücken"), isOn: $draft.autoEnter)
 
@@ -1096,6 +1102,36 @@ private struct WorkflowEditorPage: View {
         }
     }
 
+    private var workflowMicrophoneBoostSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(localizedAppText("Whisper Mode (AGC)", de: "Whisper-Modus (AGC)"))
+                .font(.subheadline.weight(.semibold))
+
+            Picker(
+                localizedAppText("Whisper Mode", de: "Whisper-Modus"),
+                selection: workflowMicrophoneBoostBinding
+            ) {
+                ForEach(WorkflowMicrophoneBoostOverride.allCases) { option in
+                    Text(option.title).tag(option)
+                }
+            }
+
+            Text(
+                draft.microphoneBoostOverride == nil
+                    ? localizedAppText(
+                        "This workflow follows the global Whisper Mode setting.",
+                        de: "Dieser Workflow folgt der globalen Whisper-Modus-Einstellung."
+                    )
+                    : localizedAppText(
+                        "This workflow overrides Whisper Mode while it records.",
+                        de: "Dieser Workflow überschreibt den Whisper-Modus während der Aufnahme."
+                    )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
     private var workflowInputLanguageEditor: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(localizedAppText("Spoken Language", de: "Gesprochene Sprache"))
@@ -1104,9 +1140,18 @@ private struct WorkflowEditorPage: View {
                 selection: $draft.inputLanguageSelection,
                 availableLanguages: settingsViewModel.availableLanguages,
                 nilBehavior: .inheritGlobal,
-                inheritTitle: localizedAppText("Global Setting", de: "Globale Einstellung")
+                inheritTitle: localizedAppText("Global Setting", de: "Globale Einstellung"),
+                hintBehavior: LanguageSelectionHintBehavior(engine: workflowLanguageEngine)
             )
         }
+    }
+
+    private var workflowLanguageEngine: TranscriptionEnginePlugin? {
+        if let engineId = draft.transcriptionEngineId,
+           let engine = pluginManager.transcriptionEngine(for: engineId) {
+            return engine
+        }
+        return settingsViewModel.activeTranscriptionEngine
     }
 
     @ViewBuilder
@@ -1754,6 +1799,32 @@ private struct WorkflowEditorPage: View {
             }
         )
     }
+
+    private var workflowMicrophoneBoostBinding: Binding<WorkflowMicrophoneBoostOverride> {
+        Binding(
+            get: { WorkflowMicrophoneBoostOverride(value: draft.microphoneBoostOverride) },
+            set: { option in
+                draft.microphoneBoostOverride = option.value
+            }
+        )
+    }
+
+    private var numberNormalizationSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker(localizedAppText("Number formatting", de: "Zahlenformatierung"), selection: $draft.numberNormalizationMode) {
+                ForEach(WorkflowNumberNormalizationMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+
+            Text(localizedAppText(
+                "Controls whether spoken English and German numbers are converted to digits for this workflow.",
+                de: "Steuert, ob gesprochene englische und deutsche Zahlen in diesem Workflow zu Ziffern werden."
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
 }
 
 private struct WorkflowTemplateCard: View {
@@ -2078,6 +2149,47 @@ enum WorkflowTriggerMode: String, CaseIterable, Hashable {
     case global
 }
 
+enum WorkflowMicrophoneBoostOverride: String, CaseIterable, Hashable, Identifiable {
+    case inherit
+    case on
+    case off
+
+    var id: String { rawValue }
+
+    var value: Bool? {
+        switch self {
+        case .inherit:
+            nil
+        case .on:
+            true
+        case .off:
+            false
+        }
+    }
+
+    init(value: Bool?) {
+        switch value {
+        case .some(true):
+            self = .on
+        case .some(false):
+            self = .off
+        case .none:
+            self = .inherit
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .inherit:
+            localizedAppText("Use Global Whisper Mode", de: "Globalen Whisper-Modus verwenden")
+        case .on:
+            localizedAppText("Whisper Mode On", de: "Whisper-Modus ein")
+        case .off:
+            localizedAppText("Whisper Mode Off", de: "Whisper-Modus aus")
+        }
+    }
+}
+
 struct WorkflowDraft {
     var name: String
     var isEnabled: Bool
@@ -2098,8 +2210,10 @@ struct WorkflowDraft {
     var outputFormat: String
     var autoEnter: Bool
     var screenOCRContextEnabled: Bool
+    var numberNormalizationMode: WorkflowNumberNormalizationMode
     var transcriptionEngineId: String?
     var transcriptionModelId: String?
+    var microphoneBoostOverride: Bool?
 
     private var preservedBehaviorSettings: [String: String]
     var providerId: String?
@@ -2130,8 +2244,10 @@ struct WorkflowDraft {
         self.outputFormat = ""
         self.autoEnter = false
         self.screenOCRContextEnabled = false
+        self.numberNormalizationMode = .inherit
         self.transcriptionEngineId = nil
         self.transcriptionModelId = nil
+        self.microphoneBoostOverride = nil
         self.preservedBehaviorSettings = [:]
         self.providerId = nil
         self.cloudModel = nil
@@ -2161,8 +2277,10 @@ struct WorkflowDraft {
         self.outputFormat = output.format ?? ""
         self.autoEnter = output.autoEnter
         self.screenOCRContextEnabled = workflow.screenOCRContextEnabled
+        self.numberNormalizationMode = output.numberNormalizationMode
         self.transcriptionEngineId = workflow.template == .dictation ? behavior.transcriptionEngineId : nil
         self.transcriptionModelId = workflow.template == .dictation ? behavior.transcriptionModelId : nil
+        self.microphoneBoostOverride = behavior.microphoneBoostOverride
         self.hotkeyBehavior = .startDictation
         self.preservedBehaviorSettings = behavior.settings
         self.providerId = behavior.providerId
@@ -2501,6 +2619,7 @@ struct WorkflowDraft {
             cloudModel: usesLLMProcessing && trimmedCloudModel?.isEmpty == false ? trimmedCloudModel : nil,
             transcriptionEngineId: trimmedTranscriptionEngineId,
             transcriptionModelId: trimmedTranscriptionEngineId != nil ? Self.trimmedOptional(transcriptionModelId) : nil,
+            microphoneBoostOverride: microphoneBoostOverride,
             temperatureModeRaw: temperatureModeRaw,
             temperatureValue: temperatureValue
         )
@@ -2511,7 +2630,8 @@ struct WorkflowDraft {
         return WorkflowOutput(
             format: usesLLMProcessing && !trimmedFormat.isEmpty ? trimmedFormat : nil,
             autoEnter: autoEnter,
-            targetActionPluginId: template == .dictation ? nil : targetActionPluginId
+            targetActionPluginId: template == .dictation ? nil : targetActionPluginId,
+            numberNormalizationModeRaw: numberNormalizationMode == .inherit ? nil : numberNormalizationMode.rawValue
         )
     }
 

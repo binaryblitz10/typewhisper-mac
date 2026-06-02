@@ -43,7 +43,8 @@ final class PostProcessingPipeline {
         dictationContext: DictationRuntimeContext? = nil,
         llmHandler: ((String) async throws -> String)? = nil,
         outputFormat: String? = nil,
-        llmStepName: String? = nil
+        llmStepName: String? = nil,
+        normalizeNumbers: Bool? = nil
     ) async throws -> PostProcessingResult {
         // ITN — priority 50, runs on raw STT output before any other transformation
         var result = numberNormalizationService.normalize(text)
@@ -57,8 +58,10 @@ final class PostProcessingPipeline {
         let plugins = PluginManager.shared.postProcessors
 
         // Build priority-ordered step list: (priority, id)
-        // IDs: -1 = LLM, -2 = snippets, -3 = dictionary, -4 = app formatter, -5 = punctuation, 0+ = plugin index
+        // IDs: -1 = LLM, -2 = snippets, -3 = dictionary, -4 = app formatter, -5 = punctuation, -6 = normalization, 0+ = plugin index
         var steps: [(priority: Int, id: Int)] = []
+
+        steps.append((100, -6))
 
         // App formatter at priority 150 (before LLM at 300)
         let formattingEnabled = UserDefaults.standard.bool(forKey: UserDefaultsKeys.appFormattingEnabled)
@@ -80,6 +83,7 @@ final class PostProcessingPipeline {
 
         func stepName(for id: Int) -> String {
             switch id {
+            case -6: return "Number Normalization"
             case -4: return "Formatting"
             case -5: return "Speech Punctuation"
             case -1: return llmStepName ?? "Prompt"
@@ -95,6 +99,18 @@ final class PostProcessingPipeline {
             let stepStart = ContinuousClock.now
             do {
                 switch step.id {
+                case -6:
+                    let languages = TranscriptionNormalizationService.normalizationLanguages(
+                        task: .transcribe,
+                        detectedLanguage: dictationContext?.detectedLanguage ?? context.language,
+                        configuredLanguage: dictationContext?.configuredLanguage ?? context.language,
+                        configuredLanguageCandidates: dictationContext?.configuredLanguageCandidates ?? []
+                    )
+                    result = TranscriptionNormalizationService.normalizeText(
+                        result,
+                        languages: languages,
+                        normalizeNumbers: normalizeNumbers
+                    )
                 case -4:
                     result = appFormatterService!.format(
                         text: result,

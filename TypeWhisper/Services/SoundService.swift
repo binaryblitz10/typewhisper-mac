@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 enum SoundChoice: Hashable, Sendable {
@@ -111,23 +112,74 @@ enum SoundEvent: CaseIterable {
 }
 
 @MainActor
+protocol OneShotSoundPlaying: AnyObject {
+    @discardableResult
+    func play(url: URL) -> Bool
+}
+
+@MainActor
+final class AVAudioOneShotSoundPlayer: OneShotSoundPlaying {
+    private var activePlayers: [AVAudioPlayer] = []
+
+    @discardableResult
+    func play(url: URL) -> Bool {
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.prepareToPlay()
+            guard player.play() else { return false }
+            activePlayers.append(player)
+            release(player, after: player.duration)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func release(_ player: AVAudioPlayer, after duration: TimeInterval) {
+        let nanoseconds = UInt64(max(duration + 0.5, 0.5) * 1_000_000_000)
+        Task { @MainActor [weak self, weak player] in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard let player else { return }
+            self?.activePlayers.removeAll { $0 === player }
+        }
+    }
+}
+
+@MainActor
 class SoundService {
     private var sounds: [SoundEvent: NSSound] = [:]
     private var choices: [SoundEvent: SoundChoice] = [:]
     private var resolvedSounds: [SoundChoice: NSSound] = [:]
     private var previewSound: NSSound?
+    private let oneShotPlayer: OneShotSoundPlaying
 
-    init() {
+    init(oneShotPlayer: OneShotSoundPlaying = AVAudioOneShotSoundPlayer()) {
+        self.oneShotPlayer = oneShotPlayer
         preloadSounds()
         loadChoices()
     }
 
-    func play(_ event: SoundEvent, enabled: Bool) {
-        guard enabled else { return }
+    @discardableResult
+    func play(_ event: SoundEvent, enabled: Bool) -> Bool {
+        guard enabled else { return false }
         let choice = choices[event] ?? event.defaultChoice
-        guard let sound = sound(for: choice) else { return }
+        if let playbackURL = filePlaybackURL(for: choice),
+           oneShotPlayer.play(url: playbackURL) {
+            return true
+        }
+        guard let sound = sound(for: choice) else { return false }
         sound.stop()
-        sound.play()
+        return sound.play()
+    }
+
+    func playbackDuration(for event: SoundEvent, enabled: Bool) -> TimeInterval? {
+        guard enabled else { return nil }
+        let choice = choices[event] ?? event.defaultChoice
+        if let playbackURL = filePlaybackURL(for: choice),
+           let duration = Self.audioFileDuration(for: playbackURL) {
+            return duration
+        }
+        return sound(for: choice)?.duration
     }
 
     func choice(for event: SoundEvent) -> SoundChoice {
@@ -197,6 +249,28 @@ class SoundService {
         guard let sound else { return nil }
         resolvedSounds[choice] = sound
         return sound
+    }
+
+    private func filePlaybackURL(for choice: SoundChoice) -> URL? {
+        switch choice {
+        case .bundled(let name):
+            return Bundle.main.url(forResource: name, withExtension: "wav")
+        case .system(let name):
+            let url = URL(fileURLWithPath: "/System/Library/Sounds")
+                .appendingPathComponent(name)
+                .appendingPathExtension("aiff")
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        case .custom(let filename):
+            let url = SoundChoice.customSoundsDirectory.appendingPathComponent(filename)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        case .none:
+            return nil
+        }
+    }
+
+    private static func audioFileDuration(for url: URL) -> TimeInterval? {
+        guard let player = try? AVAudioPlayer(contentsOf: url) else { return nil }
+        return player.duration
     }
 
     private func preloadSounds() {

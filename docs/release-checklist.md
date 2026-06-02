@@ -7,6 +7,7 @@
 - `xcodebuild -project TypeWhisper.xcodeproj -scheme TypeWhisper -configuration Release -derivedDataPath build -destination 'generic/platform=macOS' CODE_SIGN_IDENTITY='-' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`
 - `bash scripts/check_first_party_warnings.sh build.log`
 - Review `README.md`, `SECURITY.md`, `docs/support-matrix.md`, `docs/release-readiness.md`, `TypeWhisperPluginSDK/Plugins/README.md`, and `TypeWhisperPluginSDK/README.md`
+- If README screenshots changed, run `scripts/update-readme-screenshots.sh`; otherwise verify the gallery with `scripts/update-readme-screenshots.sh --check`
 - Confirm marketplace plugin manifests and registry releases carry the current `sdkCompatibilityVersion`
 - Confirm `MARKETING_VERSION = 1.4.0` across the app, CLI, and widgets
 - Prepare or refresh `docs/release-notes/1.4.0.md`
@@ -75,8 +76,9 @@
   - HTTP API: send `engine`/`model` in the `/v1/transcribe` request and verify the returned metadata
   - CLI: `typewhisper transcribe --engine <id> --model <id>` against a running local server
 - Multilingual language hints
-  - Open the language picker, search, select multiple languages, verify the selected count
-  - Run a dictation and confirm the hints reach the engine
+  - Open the language picker, search, select multiple languages, verify the selected order and count
+  - Reorder the selected languages and confirm hint-aware engines receive the ordered list
+  - Confirm engines without language-hint support use the first selected language
 - Verify CLI and HTTP API locally
 - Upgrade from `1.2.2` with 1.4 Workflows available and no Legacy settings page
 

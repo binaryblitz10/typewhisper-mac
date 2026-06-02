@@ -11,6 +11,7 @@ final class APIHandlers: @unchecked Sendable {
     private let workflowService: WorkflowService
     private let dictionaryService: DictionaryService
     private let dictationViewModel: DictationViewModel
+    private let audioRecorderViewModel: AudioRecorderViewModel
 
     init(
         modelManager: ModelManagerService,
@@ -19,7 +20,8 @@ final class APIHandlers: @unchecked Sendable {
         historyService: HistoryService,
         workflowService: WorkflowService,
         dictionaryService: DictionaryService,
-        dictationViewModel: DictationViewModel
+        dictationViewModel: DictationViewModel,
+        audioRecorderViewModel: AudioRecorderViewModel
     ) {
         self.modelManager = modelManager
         self.audioFileService = audioFileService
@@ -28,6 +30,7 @@ final class APIHandlers: @unchecked Sendable {
         self.workflowService = workflowService
         self.dictionaryService = dictionaryService
         self.dictationViewModel = dictationViewModel
+        self.audioRecorderViewModel = audioRecorderViewModel
     }
 
     func register(on router: APIRouter) {
@@ -45,9 +48,16 @@ final class APIHandlers: @unchecked Sendable {
         router.register("POST", "/v1/dictation/stop", handler: handleStopDictation)
         router.register("GET", "/v1/dictation/status", handler: handleDictationStatus)
         router.register("GET", "/v1/dictation/transcription", handler: handleDictationTranscription)
+        router.register("POST", "/v1/recorder/start", handler: handleStartRecorder)
+        router.register("POST", "/v1/recorder/stop", handler: handleStopRecorder)
+        router.register("GET", "/v1/recorder/status", handler: handleRecorderStatus)
+        router.register("GET", "/v1/recorder/session", handler: handleRecorderSession)
         router.register("GET", "/v1/dictionary/terms", handler: handleGetDictionaryTerms)
         router.register("PUT", "/v1/dictionary/terms", handler: handlePutDictionaryTerms)
         router.register("DELETE", "/v1/dictionary/terms", handler: handleDeleteDictionaryTerms)
+        router.register("GET", "/v1/dictionary/corrections", handler: handleGetDictionaryCorrections)
+        router.register("PUT", "/v1/dictionary/corrections", handler: handlePutDictionaryCorrections)
+        router.register("DELETE", "/v1/dictionary/corrections", handler: handleDeleteDictionaryCorrections)
     }
 
     // MARK: - POST /v1/transcribe
@@ -62,6 +72,7 @@ final class APIHandlers: @unchecked Sendable {
         var engineOverride: String? = nil
         var modelOverride: String? = nil
         var awaitDownload = false
+        var normalizeNumbers: Bool? = nil
     }
 
     private struct LocalFileTranscribeRequest: Decodable {
@@ -74,6 +85,7 @@ final class APIHandlers: @unchecked Sendable {
         let prompt: String?
         let engine: String?
         let model: String?
+        let normalizeNumbers: Bool?
 
         enum CodingKeys: String, CodingKey {
             case path
@@ -85,6 +97,7 @@ final class APIHandlers: @unchecked Sendable {
             case prompt
             case engine
             case model
+            case normalizeNumbers = "normalize_numbers"
         }
     }
 
@@ -157,6 +170,15 @@ final class APIHandlers: @unchecked Sendable {
                !val.isEmpty {
                 options.modelOverride = val
             }
+
+            if let normalizePart = parts.first(where: { $0.name == "normalize_numbers" }),
+               let val = String(data: normalizePart.data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !val.isEmpty {
+                guard let parsed = Self.parseBoolean(val) else {
+                    return .error(status: 400, message: "Invalid 'normalize_numbers' value")
+                }
+                options.normalizeNumbers = parsed
+            }
         } else if !request.body.isEmpty {
             audioData = request.body
             fileExtension = extensionFromMIME(contentType)
@@ -183,6 +205,13 @@ final class APIHandlers: @unchecked Sendable {
             if let model = request.headers["x-model"]?.trimmingCharacters(in: .whitespacesAndNewlines),
                !model.isEmpty {
                 options.modelOverride = model
+            }
+            if let normalizeNumbers = request.headers["x-normalize-numbers"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !normalizeNumbers.isEmpty {
+                guard let parsed = Self.parseBoolean(normalizeNumbers) else {
+                    return .error(status: 400, message: "Invalid 'x-normalize-numbers' value")
+                }
+                options.normalizeNumbers = parsed
             }
         } else {
             return .error(status: 400, message: "No audio data provided")
@@ -238,6 +267,7 @@ final class APIHandlers: @unchecked Sendable {
         options.requestPrompt = payload.prompt?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         options.engineOverride = payload.engine?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         options.modelOverride = payload.model?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        options.normalizeNumbers = payload.normalizeNumbers
 
         do {
             let samples = try await audioFileService.loadAudioSamples(from: fileURL)
@@ -296,7 +326,8 @@ final class APIHandlers: @unchecked Sendable {
                 task: options.task,
                 engineOverrideId: resolvedOverride.engineId,
                 cloudModelOverride: resolvedOverride.modelId,
-                prompt: prompt
+                prompt: prompt,
+                normalizeNumbers: options.normalizeNumbers
             )
 
             var finalText = result.text
@@ -526,6 +557,17 @@ final class APIHandlers: @unchecked Sendable {
         return components.joined(separator: "\n")
     }
 
+    private static func parseBoolean(_ value: String) -> Bool? {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "on":
+            true
+        case "0", "false", "no", "off":
+            false
+        default:
+            nil
+        }
+    }
+
     // MARK: - GET /v1/status
 
     private func handleStatus(_ request: HTTPRequest) async -> HTTPResponse {
@@ -712,23 +754,157 @@ final class APIHandlers: @unchecked Sendable {
             let count: Int
         }
 
-        return await MainActor.run {
-            dictionaryService.setTerms(payload.terms, replaceExisting: payload.replace ?? false)
-            let terms = dictionaryService.enabledTerms()
-            return .json(DictionaryTermsResponse(terms: terms, count: terms.count))
+        do {
+            return try await MainActor.run {
+                try dictionaryService.setAPITerms(payload.terms, replaceExisting: payload.replace ?? false)
+                let terms = dictionaryService.enabledTerms()
+                return .json(DictionaryTermsResponse(terms: terms, count: terms.count))
+            }
+        } catch {
+            return .error(status: 500, message: "Failed to save dictionary: \(error.localizedDescription)")
         }
     }
 
     private func handleDeleteDictionaryTerms(_ request: HTTPRequest) async -> HTTPResponse {
+        struct DeleteDictionaryTermRequest: Decodable {
+            let term: String
+        }
+
         struct DeleteResponse: Encodable {
             let deleted: Bool
             let count: Int
         }
 
-        return await MainActor.run {
-            dictionaryService.removeAllTerms()
-            return .json(DeleteResponse(deleted: true, count: 0))
+        guard !request.body.isEmpty else {
+            return .error(status: 400, message: "Missing JSON body")
         }
+
+        let payload: DeleteDictionaryTermRequest
+        do {
+            payload = try JSONDecoder().decode(DeleteDictionaryTermRequest.self, from: request.body)
+        } catch {
+            return .error(status: 400, message: "Invalid JSON body")
+        }
+
+        let term = payload.term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else {
+            return .error(status: 400, message: "Missing or empty 'term'")
+        }
+
+        do {
+            return try await MainActor.run {
+                let deleted = try dictionaryService.deleteAPITerm(term)
+                let terms = dictionaryService.enabledTerms()
+                return .json(DeleteResponse(deleted: deleted, count: terms.count))
+            }
+        } catch {
+            return .error(status: 500, message: "Failed to save dictionary: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - /v1/dictionary/corrections
+
+    private struct DictionaryCorrectionEntry: Encodable {
+        let original: String
+        let replacement: String
+        let caseSensitive: Bool
+    }
+
+    private struct DictionaryCorrectionsResponse: Encodable {
+        let corrections: [DictionaryCorrectionEntry]
+        let count: Int
+    }
+
+    private func handleGetDictionaryCorrections(_ request: HTTPRequest) async -> HTTPResponse {
+        await MainActor.run {
+            dictionaryCorrectionsResponse()
+        }
+    }
+
+    private func handlePutDictionaryCorrections(_ request: HTTPRequest) async -> HTTPResponse {
+        struct DictionaryCorrectionRequest: Decodable {
+            let original: String
+            let replacement: String
+            let caseSensitive: Bool?
+        }
+
+        guard !request.body.isEmpty else {
+            return .error(status: 400, message: "Missing JSON body")
+        }
+
+        let payload: DictionaryCorrectionRequest
+        do {
+            payload = try JSONDecoder().decode(DictionaryCorrectionRequest.self, from: request.body)
+        } catch {
+            return .error(status: 400, message: "Invalid JSON body")
+        }
+
+        let original = payload.original.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !original.isEmpty else {
+            return .error(status: 400, message: "Missing or empty 'original'")
+        }
+
+        do {
+            return try await MainActor.run {
+                try dictionaryService.upsertAPICorrection(
+                    original: original,
+                    replacement: payload.replacement,
+                    caseSensitive: payload.caseSensitive ?? false
+                )
+                return dictionaryCorrectionsResponse()
+            }
+        } catch {
+            return .error(status: 500, message: "Failed to save dictionary: \(error.localizedDescription)")
+        }
+    }
+
+    private func handleDeleteDictionaryCorrections(_ request: HTTPRequest) async -> HTTPResponse {
+        struct DeleteDictionaryCorrectionRequest: Decodable {
+            let original: String
+        }
+
+        struct DeleteResponse: Encodable {
+            let deleted: Bool
+            let count: Int
+        }
+
+        guard !request.body.isEmpty else {
+            return .error(status: 400, message: "Missing JSON body")
+        }
+
+        let payload: DeleteDictionaryCorrectionRequest
+        do {
+            payload = try JSONDecoder().decode(DeleteDictionaryCorrectionRequest.self, from: request.body)
+        } catch {
+            return .error(status: 400, message: "Invalid JSON body")
+        }
+
+        let original = payload.original.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !original.isEmpty else {
+            return .error(status: 400, message: "Missing or empty 'original'")
+        }
+
+        do {
+            return try await MainActor.run {
+                let deleted = try dictionaryService.deleteAPICorrection(original: original)
+                let count = dictionaryService.corrections.count
+                return .json(DeleteResponse(deleted: deleted, count: count))
+            }
+        } catch {
+            return .error(status: 500, message: "Failed to save dictionary: \(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    private func dictionaryCorrectionsResponse() -> HTTPResponse {
+        let corrections = dictionaryService.corrections.map {
+            DictionaryCorrectionEntry(
+                original: $0.original,
+                replacement: $0.replacement ?? "",
+                caseSensitive: $0.caseSensitive
+            )
+        }
+        return .json(DictionaryCorrectionsResponse(corrections: corrections, count: corrections.count))
     }
 
     // MARK: - GET /v1/rules
@@ -930,7 +1106,118 @@ final class APIHandlers: @unchecked Sendable {
         }
     }
 
+    // MARK: - POST /v1/recorder/start
+
+    private func handleStartRecorder(_ request: HTTPRequest) async -> HTTPResponse {
+        let micEnabled: Bool?
+        let systemAudioEnabled: Bool?
+        do {
+            micEnabled = try parseOptionalBooleanQuery(request, name: "mic")
+            systemAudioEnabled = try parseOptionalBooleanQuery(request, name: "system_audio")
+        } catch {
+            return .error(status: 400, message: error.localizedDescription)
+        }
+
+        do {
+            let id = try await audioRecorderViewModel.apiStartRecording(
+                micEnabled: micEnabled,
+                systemAudioEnabled: systemAudioEnabled
+            )
+
+            struct StartResponse: Encodable {
+                let id: String
+                let status: String
+            }
+            return .json(StartResponse(id: id.uuidString, status: "recording"))
+        } catch AudioRecorderViewModel.RecorderAPIError.noSourceEnabled {
+            return .error(status: 400, message: AudioRecorderViewModel.RecorderAPIError.noSourceEnabled.localizedDescription)
+        } catch AudioRecorderViewModel.RecorderAPIError.alreadyRecording {
+            return .error(status: 409, message: AudioRecorderViewModel.RecorderAPIError.alreadyRecording.localizedDescription)
+        } catch AudioRecorderViewModel.RecorderAPIError.finalizing {
+            return .error(status: 409, message: AudioRecorderViewModel.RecorderAPIError.finalizing.localizedDescription)
+        } catch {
+            return .error(status: 409, message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - POST /v1/recorder/stop
+
+    private func handleStopRecorder(_ request: HTTPRequest) async -> HTTPResponse {
+        do {
+            let id = try await audioRecorderViewModel.apiStopRecording()
+
+            struct StopResponse: Encodable {
+                let id: String
+                let status: String
+            }
+            return .json(StopResponse(id: id.uuidString, status: "finalizing"))
+        } catch {
+            return .error(status: 409, message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - GET /v1/recorder/status
+
+    private func handleRecorderStatus(_ request: HTTPRequest) async -> HTTPResponse {
+        let recording = await audioRecorderViewModel.apiRecorderIsRecording
+
+        struct RecorderStatusResponse: Encodable {
+            let recording: Bool
+        }
+        return .json(RecorderStatusResponse(recording: recording))
+    }
+
+    // MARK: - GET /v1/recorder/session
+
+    private func handleRecorderSession(_ request: HTTPRequest) async -> HTTPResponse {
+        guard let idString = request.queryParams["id"],
+              let uuid = UUID(uuidString: idString) else {
+            return .error(status: 400, message: "Missing or invalid 'id' query parameter")
+        }
+        guard let session = await audioRecorderViewModel.apiRecorderSession(id: uuid) else {
+            return .error(status: 404, message: "Recorder session not found")
+        }
+
+        struct RecorderSessionResponse: Encodable {
+            let id: String
+            let status: String
+            let text: String?
+            let output_file: String?
+            let error: String?
+        }
+        return .json(RecorderSessionResponse(
+            id: session.id.uuidString,
+            status: session.status.rawValue,
+            text: session.text,
+            output_file: session.outputFile,
+            error: session.error
+        ))
+    }
+
     // MARK: - Helpers
+
+    private enum BooleanQueryError: LocalizedError {
+        case invalid(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalid(let name):
+                "Invalid '\(name)' query parameter"
+            }
+        }
+    }
+
+    private func parseOptionalBooleanQuery(_ request: HTTPRequest, name: String) throws -> Bool? {
+        guard let value = request.queryParams[name] else { return nil }
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1":
+            return true
+        case "false", "0":
+            return false
+        default:
+            throw BooleanQueryError.invalid(name)
+        }
+    }
 
     private func extractBoundary(from contentType: String) -> String? {
         for part in contentType.components(separatedBy: ";") {

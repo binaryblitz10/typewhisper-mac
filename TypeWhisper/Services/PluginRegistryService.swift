@@ -100,6 +100,10 @@ struct RegistryPlugin: Codable, Identifiable {
     let hosting: PluginHosting?
     let descriptions: [String: String]?
     let downloadCount: Int?
+    let detailsURL: String?
+    let homepageURL: String?
+    let iconURL: String?
+    let iconDarkURL: String?
 
     var localizedDescription: String {
         if let descriptions,
@@ -119,6 +123,56 @@ struct RegistryPlugin: Codable, Identifiable {
 
     var resolvedHosting: PluginHosting {
         hosting ?? PluginHosting.fallback(requiresAPIKey: requiresAPIKey)
+    }
+
+    init(
+        id: String,
+        source: PluginDistributionSource,
+        name: String,
+        version: String,
+        minHostVersion: String,
+        sdkCompatibilityVersion: String?,
+        minOSVersion: String?,
+        supportedArchitectures: [String]?,
+        author: String,
+        description: String,
+        category: String,
+        categories: [String],
+        size: Int64,
+        downloadURL: String,
+        iconSystemName: String?,
+        requiresAPIKey: Bool?,
+        hosting: PluginHosting?,
+        descriptions: [String: String]?,
+        downloadCount: Int?,
+        detailsURL: String? = nil,
+        homepageURL: String? = nil,
+        iconURL: String? = nil,
+        iconDarkURL: String? = nil
+    ) {
+        self.id = id
+        self.source = source
+        self.name = name
+        self.version = version
+        self.minHostVersion = minHostVersion
+        self.sdkCompatibilityVersion = sdkCompatibilityVersion
+        self.minOSVersion = minOSVersion
+        self.supportedArchitectures = supportedArchitectures
+        self.author = author
+        self.description = description
+        self.category = category
+        self.categories = categories
+        self.size = size
+        self.downloadURL = downloadURL
+        self.iconSystemName = iconSystemName
+        self.requiresAPIKey = requiresAPIKey
+        self.hosting = hosting
+        self.descriptions = descriptions
+        self.downloadCount = downloadCount
+        self.detailsURL = detailsURL
+        self.homepageURL = homepageURL
+        self.iconURL = iconURL
+        self.iconDarkURL = iconDarkURL
     }
 }
 
@@ -148,6 +202,10 @@ struct RegistryPluginRelease: Decodable, Equatable {
                 architecture: architecture
             )
     }
+
+    func isTrusted(for source: PluginDistributionSource) -> Bool {
+        PluginRegistryService.isTrustedRegistryDownloadURL(downloadURL, source: source)
+    }
 }
 
 struct RegistryPluginEntry: Decodable {
@@ -163,6 +221,10 @@ struct RegistryPluginEntry: Decodable {
     let hosting: PluginHosting?
     let descriptions: [String: String]?
     let downloadCount: Int?
+    let detailsURL: String?
+    let homepageURL: String?
+    let iconURL: String?
+    let iconDarkURL: String?
     let releases: [RegistryPluginRelease]
 
     private enum CodingKeys: String, CodingKey {
@@ -178,6 +240,10 @@ struct RegistryPluginEntry: Decodable {
         case hosting
         case descriptions
         case downloadCount
+        case detailsURL
+        case homepageURL
+        case iconURL
+        case iconDarkURL
         case releases
         case version
         case minHostVersion
@@ -207,9 +273,36 @@ struct RegistryPluginEntry: Decodable {
         hosting = try container.decodeIfPresent(PluginHosting.self, forKey: .hosting)
         descriptions = try container.decodeIfPresent([String: String].self, forKey: .descriptions)
         downloadCount = try container.decodeIfPresent(Int.self, forKey: .downloadCount)
+        detailsURL = Self.validHTTPURLString(from: try? container.decodeIfPresent(String.self, forKey: .detailsURL))
+        homepageURL = Self.validHTTPURLString(from: try? container.decodeIfPresent(String.self, forKey: .homepageURL))
+        iconURL = Self.validHTTPSURLString(from: try? container.decodeIfPresent(String.self, forKey: .iconURL))
+        iconDarkURL = Self.validHTTPSURLString(from: try? container.decodeIfPresent(String.self, forKey: .iconDarkURL))
 
         let decodedReleases = try container.decodeIfPresent([RegistryPluginRelease].self, forKey: .releases) ?? []
         releases = decodedReleases
+    }
+
+    private static func validHTTPURLString(from value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              (scheme == "https" || scheme == "http"),
+              components.host != nil else {
+            return nil
+        }
+        return value
+    }
+
+    private static func validHTTPSURLString(from value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https",
+              components.host != nil else {
+            return nil
+        }
+        return value
     }
 
     func resolvedPlugin(
@@ -226,6 +319,7 @@ struct RegistryPluginEntry: Decodable {
                     currentOSVersion: currentOSVersion,
                     architecture: architecture
                 )
+                && $0.isTrusted(for: source)
             }
             .max { first, second in
                 PluginRegistryService.compareVersions(first.version, second.version) == .orderedAscending
@@ -252,7 +346,11 @@ struct RegistryPluginEntry: Decodable {
             requiresAPIKey: requiresAPIKey,
             hosting: hosting,
             descriptions: descriptions,
-            downloadCount: compatibleRelease.downloadCount ?? downloadCount
+            downloadCount: compatibleRelease.downloadCount ?? downloadCount,
+            detailsURL: detailsURL,
+            homepageURL: homepageURL,
+            iconURL: iconURL,
+            iconDarkURL: iconDarkURL
         )
     }
 }
@@ -361,6 +459,7 @@ final class PluginRegistryService: ObservableObject {
     private let fetchData: (URLRequest) async throws -> (Data, URLResponse)
     private let cacheDirectory: URL
     private static let lastUpdateCheckKey = "pluginRegistryLastUpdateCheck"
+    private static let lastHostFingerprintCheckKey = "pluginRegistryLastHostFingerprintCheck"
 
     enum FetchState: Equatable {
         case idle
@@ -401,6 +500,23 @@ final class PluginRegistryService: ObservableObject {
         return .v1
     }
 
+    nonisolated static func isTrustedRegistryDownloadURL(
+        _ downloadURL: String,
+        source: PluginDistributionSource
+    ) -> Bool {
+        guard source == .community else { return true }
+        guard let components = URLComponents(string: downloadURL),
+              components.scheme == "https",
+              components.host?.lowercased() == "github.com"
+        else {
+            return false
+        }
+
+        return components.path.hasPrefix(
+            "/TypeWhisper/typewhisper-mac/releases/download/"
+        )
+    }
+
     init(
         registryBaseURL: URL = URL(string: "https://typewhisper.github.io/typewhisper-mac")!,
         cacheDirectory: URL = AppConstants.appSupportDirectory.appendingPathComponent("MarketplaceCache", isDirectory: true),
@@ -423,12 +539,13 @@ final class PluginRegistryService: ObservableObject {
 
     // MARK: - Fetch Registry
 
-    func fetchRegistry(force: Bool = false) async {
+    @discardableResult
+    func fetchRegistry(force: Bool = false) async -> Bool {
         if !force,
            let lastFetch = lastFetchDate,
            Date().timeIntervalSince(lastFetch) < cacheDuration,
            !registry.isEmpty {
-            return
+            return true
         }
 
         fetchState = .loading
@@ -443,37 +560,78 @@ final class PluginRegistryService: ObservableObject {
             request.cachePolicy = .reloadIgnoringLocalCacheData
             let (data, _) = try await fetchData(request)
 
-            try applyRegistryData(data, feed: feed)
+            try applyRegistryData(data, feed: feed, markFetchDate: true)
             try cacheRegistryData(data, feed: feed)
             logger.info("Fetched \(self.registry.count) plugin(s) from registry feed \(feed.rawValue, privacy: .public)")
+            return true
         } catch {
             do {
                 let cachedData = try Data(contentsOf: cacheURL(for: feed))
-                try applyRegistryData(cachedData, feed: feed)
+                try applyRegistryData(cachedData, feed: feed, markFetchDate: false)
                 logger.warning(
                     "Using cached plugin registry feed \(feed.rawValue, privacy: .public) after fetch failure: \(error.localizedDescription, privacy: .public)"
                 )
+                return false
             } catch {
                 fetchState = .error(error.localizedDescription)
                 logger.error("Failed to fetch registry: \(error.localizedDescription)")
+                return false
             }
         }
     }
 
     // MARK: - Background Update Check
 
-    /// Check for plugin updates on app launch (at most once per 24h).
+    /// Check for plugin updates on app launch (at most once per 24h), and force
+    /// one refresh after each host app update so bundled registry gates are not
+    /// hidden behind the previous build's throttle window.
     func checkForUpdatesInBackground() {
-        let lastCheck = userDefaults.double(forKey: Self.lastUpdateCheckKey)
-        let hoursSinceLastCheck = (Date().timeIntervalSince1970 - lastCheck) / 3600
-        guard hoursSinceLastCheck >= 24 || lastCheck == 0 else { return }
-
         Task {
-            lastFetchDate = nil
-            await fetchRegistry(force: true)
-            updateAvailableUpdatesCount()
-            userDefaults.set(Date().timeIntervalSince1970, forKey: Self.lastUpdateCheckKey)
+            await refreshRegistryForHostUpdateIfNeeded()
         }
+    }
+
+    @discardableResult
+    func refreshRegistryForHostUpdateIfNeeded(
+        currentFingerprint: String = AppConstants.currentReleaseFingerprint,
+        now: Date = Date()
+    ) async -> Bool {
+        let lastCheck = userDefaults.double(forKey: Self.lastUpdateCheckKey)
+        let hoursSinceLastCheck = (now.timeIntervalSince1970 - lastCheck) / 3600
+        let lastFingerprint = userDefaults.string(forKey: Self.lastHostFingerprintCheckKey)
+        let hostChanged = lastFingerprint != currentFingerprint
+
+        guard hostChanged || hoursSinceLastCheck >= 24 || lastCheck == 0 else {
+            return false
+        }
+
+        lastFetchDate = nil
+        let refreshSucceeded = await fetchRegistry(force: true)
+        guard refreshSucceeded else {
+            return false
+        }
+        userDefaults.set(now.timeIntervalSince1970, forKey: Self.lastUpdateCheckKey)
+        userDefaults.set(currentFingerprint, forKey: Self.lastHostFingerprintCheckKey)
+        return true
+    }
+
+    static func canRepairInstalledPlugin(
+        isBundled: Bool,
+        registryPlugin: RegistryPlugin?,
+        installInfo: PluginInstallInfo,
+        installState: InstallState?,
+        externalNotice: ExternalBundleNotice?
+    ) -> Bool {
+        guard !isBundled,
+              registryPlugin != nil,
+              installState == nil,
+              externalNotice?.requiresConfirmation == true else {
+            return false
+        }
+        if case .installed = installInfo {
+            return true
+        }
+        return false
     }
 
     func updateAvailableUpdatesCount() {
@@ -513,20 +671,21 @@ final class PluginRegistryService: ObservableObject {
 
     // MARK: - Download & Install
 
-    func downloadAndInstall(_ plugin: RegistryPlugin) async {
+    @discardableResult
+    func downloadAndInstall(_ plugin: RegistryPlugin) async -> Bool {
         guard plugin.isCompatibleWithCurrentEnvironment else {
             installStates[plugin.id] = .error("Plugin is not compatible with this Mac")
-            return
+            return false
         }
 
         guard let url = URL(string: plugin.downloadURL) else {
             installStates[plugin.id] = .error("Invalid download URL")
-            return
+            return false
         }
 
         guard activeInstallPluginIDs.insert(plugin.id).inserted else {
             logger.warning("Skipping duplicate install request for \(plugin.id)")
-            return
+            return false
         }
         defer { activeInstallPluginIDs.remove(plugin.id) }
 
@@ -563,17 +722,17 @@ final class PluginRegistryService: ObservableObject {
 
             guard process.terminationStatus == 0 else {
                 installStates[plugin.id] = .error("Failed to extract ZIP")
-                return
+                return false
             }
 
             // Find .bundle in extracted directory
             let extracted = try FileManager.default.contentsOfDirectory(at: extractDir, includingPropertiesForKeys: nil)
             guard let bundleURL = extracted.first(where: { $0.pathExtension == "bundle" }) else {
                 installStates[plugin.id] = .error("No .bundle found in ZIP")
-                return
+                return false
             }
 
-            try installBundle(
+            _ = try installBundle(
                 at: bundleURL,
                 expectedPluginId: plugin.id,
                 copyBundle: false
@@ -583,9 +742,11 @@ final class PluginRegistryService: ObservableObject {
             lastFetchDate = nil // invalidate cache so installInfo refreshes
             updateAvailableUpdatesCount()
             logger.info("Installed plugin \(plugin.id) v\(plugin.version)")
+            return true
         } catch {
             installStates[plugin.id] = .error(error.localizedDescription)
             logger.error("Failed to install \(plugin.id): \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -613,11 +774,12 @@ final class PluginRegistryService: ObservableObject {
 
     // MARK: - Install from File
 
-    func installFromFile(_ url: URL) async throws {
+    @discardableResult
+    func installFromFile(_ url: URL) async throws -> PluginManifest {
         let fm = FileManager.default
 
         if url.pathExtension == "bundle" {
-            try installBundle(at: url, expectedPluginId: nil, copyBundle: true)
+            return try installBundle(at: url, expectedPluginId: nil, copyBundle: true)
         } else if url.pathExtension == "zip" {
             let tempDir = fm.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -641,11 +803,14 @@ final class PluginRegistryService: ObservableObject {
                               userInfo: [NSLocalizedDescriptionKey: "No .bundle found in ZIP"])
             }
 
-            try installBundle(at: bundleURL, expectedPluginId: nil, copyBundle: false)
+            return try installBundle(at: bundleURL, expectedPluginId: nil, copyBundle: false)
         }
+
+        throw NSError(domain: "PluginRegistry", code: 5,
+                      userInfo: [NSLocalizedDescriptionKey: "Unsupported plugin package"])
     }
 
-    private func installBundle(at bundleURL: URL, expectedPluginId: String?, copyBundle: Bool) throws {
+    private func installBundle(at bundleURL: URL, expectedPluginId: String?, copyBundle: Bool) throws -> PluginManifest {
         let fm = FileManager.default
         let manifest = try readManifest(at: bundleURL)
         let existingLoadedBundleURL = PluginManager.shared.bundleURL(for: manifest.id)
@@ -722,6 +887,8 @@ final class PluginRegistryService: ObservableObject {
             }
             throw error
         }
+
+        return manifest
     }
 
     static func validateDownloadedArchiveResponse(_ response: URLResponse) throws {
@@ -818,13 +985,15 @@ final class PluginRegistryService: ObservableObject {
         cacheDirectory.appendingPathComponent(feed.pathComponent)
     }
 
-    private func applyRegistryData(_ data: Data, feed: RegistryFeed) throws {
+    private func applyRegistryData(_ data: Data, feed: RegistryFeed, markFetchDate: Bool) throws {
         let response = try JSONDecoder().decode(PluginRegistryResponse.self, from: data)
         registry = response.resolvedPlugins(
             appVersion: resolvedAppVersion,
             sdkCompatibilityVersion: PluginSDKCompatibility.currentVersion
         )
-        lastFetchDate = Date()
+        if markFetchDate {
+            lastFetchDate = Date()
+        }
         fetchState = .loaded
         updateAvailableUpdatesCount()
         logger.info("Resolved \(self.registry.count) compatible plugin(s) from \(feed.rawValue, privacy: .public)")

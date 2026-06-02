@@ -4,6 +4,7 @@ import SwiftUI
 struct MinimalIndicatorView: View {
     @ObservedObject private var viewModel = DictationViewModel.shared
     @AppStorage(UserDefaultsKeys.minimalIndicatorCompactMode) private var compactModeEnabled = true
+    @ObservedObject private var recorder = AudioRecorderViewModel.shared
     @State private var dotPulse = false
 
     private let sizing: IndicatorSizing = .minimal
@@ -11,6 +12,10 @@ struct MinimalIndicatorView: View {
     private let processingWidth: CGFloat = 76
     private let insertingWidth: CGFloat = 44
     private let messageWidth: CGFloat = 320
+
+    private var presentation: IndicatorPresentationData {
+        IndicatorPresentationData.make(dictation: viewModel, recorder: recorder)
+    }
 
     private var recordingWidth: CGFloat {
         switch viewModel.notchIndicatorRightContent {
@@ -23,7 +28,7 @@ struct MinimalIndicatorView: View {
         case .timer:
             return 118
         case .profile:
-            guard let name = viewModel.activeRuleName, !name.isEmpty else {
+            guard let name = presentation.activeRuleName, !name.isEmpty else {
                 return idleWidth
             }
             let estimatedTextWidth = CGFloat(min(name.count, 18)) * 7
@@ -37,19 +42,19 @@ struct MinimalIndicatorView: View {
 
     private var actionFeedbackMessage: String? {
         guard !compactModeEnabled else { return nil }
-        guard viewModel.state == .inserting else { return nil }
-        return viewModel.actionFeedbackMessage
+        guard presentation.state == .inserting else { return nil }
+        return presentation.actionFeedbackMessage
     }
 
     private var recordingCancelWarningMessage: String? {
         guard !compactModeEnabled else { return nil }
-        guard viewModel.state == .recording else { return nil }
-        return viewModel.recordingCancelWarningMessage
+        guard presentation.state == .recording else { return nil }
+        return presentation.recordingCancelWarningMessage
     }
 
     private var errorMessage: String? {
         guard !compactModeEnabled else { return nil }
-        guard case let .error(message) = viewModel.state else { return nil }
+        guard case let .error(message) = presentation.state else { return nil }
         return message
     }
 
@@ -63,7 +68,7 @@ struct MinimalIndicatorView: View {
         }
 
         if compactModeEnabled {
-            switch viewModel.state {
+            switch presentation.state {
             case .recording, .processing, .inserting:
                 return recordingWidth
             case .idle, .promptSelection, .promptProcessing:
@@ -73,7 +78,7 @@ struct MinimalIndicatorView: View {
             }
         }
 
-        switch viewModel.state {
+        switch presentation.state {
         case .recording:
             return recordingWidth
         case .processing:
@@ -101,10 +106,10 @@ struct MinimalIndicatorView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: isTop ? .top : .bottom)
             .preferredColorScheme(.dark)
             .animation(.easeInOut(duration: 0.2), value: currentWidth)
-            .animation(.easeInOut(duration: 0.2), value: viewModel.state)
+            .animation(.easeInOut(duration: 0.2), value: presentation.state)
             .animation(.easeInOut(duration: 1.0), value: dotPulse)
-            .onChange(of: viewModel.state) {
-                if viewModel.state == .recording {
+            .onChange(of: presentation.state) {
+                if presentation.state == .recording {
                     withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
                         dotPulse = true
                     }
@@ -125,11 +130,11 @@ struct MinimalIndicatorView: View {
             return message
         }
 
-        switch viewModel.state {
+        switch presentation.state {
         case .idle, .promptSelection, .promptProcessing:
             return String(localized: "Idle")
         case .recording:
-            if !viewModel.isRecordingInputReady {
+            if !presentation.isRecordingInputReady {
                 return String(localized: "Preparing microphone")
             }
             return String(localized: "Recording")
@@ -159,8 +164,8 @@ struct MinimalIndicatorView: View {
             } else if let message = actionFeedbackMessage {
                 compactMessage(
                     text: message,
-                    icon: viewModel.actionFeedbackIcon ?? (viewModel.actionFeedbackIsError ? "xmark.circle.fill" : "checkmark.circle.fill"),
-                    iconColor: viewModel.actionFeedbackIsError ? .red : .green
+                    icon: presentation.actionFeedbackIcon ?? (presentation.actionFeedbackIsError ? "xmark.circle.fill" : "checkmark.circle.fill"),
+                    iconColor: presentation.actionFeedbackIsError ? .red : .green
                 )
             } else {
                 compactStatus
@@ -177,33 +182,53 @@ struct MinimalIndicatorView: View {
     }
 
     @ViewBuilder
+    @ViewBuilder
     private var compactStatus: some View {
         if compactModeEnabled {
-            compactModeStatus
+            switch presentation.state {
+            case .recording, .processing, .inserting:
+                if viewModel.notchIndicatorRightContent != .none {
+                    IndicatorRecordingContent(
+                        presentation: presentation,
+                        content: viewModel.notchIndicatorRightContent,
+                        sizing: sizing,
+                        dotPulse: dotPulse,
+                        hasContext: viewModel.hasActiveWorkflow && viewModel.hasAttachedContext,
+                        stateForIsProcessing: viewModel.state
+                    )
+                } else {
+                    Color.clear.frame(width: 1, height: 1)
+                }
+            case .idle, .promptSelection, .promptProcessing:
+                Color.clear.frame(width: 1, height: 1)
+            case .error:
+                EmptyView()
+            }
         } else {
-            switch viewModel.state {
+            switch presentation.state {
             case .recording:
                 HStack(spacing: viewModel.notchIndicatorRightContent == .none ? 0 : 8) {
                     IndicatorLeftStatus(
-                        viewModel: viewModel,
+                        presentation: presentation,
                         sizing: sizing,
                         dotPulse: dotPulse,
                         hasActionFeedback: false,
                         showActiveAppIcon: !compactModeEnabled
                     )
-
                     if viewModel.notchIndicatorRightContent != .none {
                         IndicatorRecordingContent(
-                            viewModel: viewModel,
+                            presentation: presentation,
                             content: viewModel.notchIndicatorRightContent,
                             sizing: sizing,
-                            dotPulse: dotPulse
+                            dotPulse: dotPulse,
+                            hasContext: viewModel.hasActiveWorkflow && viewModel.hasAttachedContext,
+                            stateForIsProcessing: viewModel.state
                         )
                     }
                 }
             case .processing:
                 HStack(spacing: 8) {
-                    if !compactModeEnabled, let icon = viewModel.activeAppIcon {
+                    if let icon = presentation.activeAppIcon {
                         IndicatorAppIconView(icon: icon, sizing: sizing)
                     }
                     ProgressView()
@@ -212,39 +237,17 @@ struct MinimalIndicatorView: View {
                 }
             case .inserting:
                 IndicatorLeftStatus(
-                    viewModel: viewModel,
+                    presentation: presentation,
                     sizing: sizing,
                     dotPulse: false,
                     hasActionFeedback: false,
                     showActiveAppIcon: !compactModeEnabled
                 )
             case .idle, .promptSelection, .promptProcessing:
-                Color.clear
-                    .frame(width: 1, height: 1)
+                Color.clear.frame(width: 1, height: 1)
             case .error:
                 EmptyView()
             }
-        }
-    }
-
-    @ViewBuilder
-    private var compactModeStatus: some View {
-        switch viewModel.state {
-        case .recording, .processing, .inserting:
-            if viewModel.notchIndicatorRightContent != .none {
-                IndicatorRecordingContent(
-                    viewModel: viewModel,
-                    content: viewModel.notchIndicatorRightContent,
-                    sizing: sizing,
-                    dotPulse: dotPulse
-                )
-            } else {
-                Color.clear.frame(width: 1, height: 1)
-            }
-        case .idle, .promptSelection, .promptProcessing:
-            Color.clear.frame(width: 1, height: 1)
-        case .error:
-            EmptyView()
         }
     }
 

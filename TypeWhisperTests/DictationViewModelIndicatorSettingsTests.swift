@@ -100,6 +100,30 @@ final class DictationViewModelIndicatorSettingsTests: XCTestCase {
         )
         XCTAssertTrue(DictationViewModel.loadTranscribeShortQuietClipsAggressively(defaults: defaults))
     }
+
+    func testMicrophoneBoostDefaultsToDisabled() {
+        XCTAssertFalse(DictationViewModel.loadMicrophoneBoostEnabled(defaults: defaults))
+    }
+
+    func testMicrophoneBoostPersistsWhenEnabled() {
+        DictationViewModel.persistMicrophoneBoostEnabled(true, defaults: defaults)
+
+        XCTAssertEqual(
+            defaults.object(forKey: UserDefaultsKeys.microphoneBoostEnabled) as? Bool,
+            true
+        )
+        XCTAssertTrue(DictationViewModel.loadMicrophoneBoostEnabled(defaults: defaults))
+    }
+
+    func testMicrophoneBoostPersistsWhenDisabled() {
+        DictationViewModel.persistMicrophoneBoostEnabled(false, defaults: defaults)
+
+        XCTAssertEqual(
+            defaults.object(forKey: UserDefaultsKeys.microphoneBoostEnabled) as? Bool,
+            false
+        )
+        XCTAssertFalse(DictationViewModel.loadMicrophoneBoostEnabled(defaults: defaults))
+    }
 }
 
 final class IndicatorScreenResolverTests: XCTestCase {
@@ -313,6 +337,36 @@ final class IndicatorFullscreenSuppressionPolicyTests: XCTestCase {
             )
         )
     }
+
+    func testDoesNotSuppressNonNotchPlacementEvenOverForeignFullscreenWindow() {
+        let fullscreenWindow = CGRect(x: 0, y: 0, width: 3024, height: 1964)
+
+        XCTAssertFalse(
+            IndicatorFullscreenSuppressionPolicy.shouldSuppressIndicator(
+                screenFrame: notchedScreenFrame,
+                safeAreaTopInset: 74,
+                windowFrame: fullscreenWindow,
+                frontmostBundleIdentifier: "com.apple.ScreenSharing",
+                appBundleIdentifier: "com.typewhisper.mac.dev",
+                placement: .nonNotchArea
+            )
+        )
+    }
+
+    func testNotchStripPlacementStillSuppressesAsBefore() {
+        let fullscreenWindow = CGRect(x: 0, y: 0, width: 3024, height: 1964)
+
+        XCTAssertTrue(
+            IndicatorFullscreenSuppressionPolicy.shouldSuppressIndicator(
+                screenFrame: notchedScreenFrame,
+                safeAreaTopInset: 74,
+                windowFrame: fullscreenWindow,
+                frontmostBundleIdentifier: "com.apple.ScreenSharing",
+                appBundleIdentifier: "com.typewhisper.mac.dev",
+                placement: .notchStrip
+            )
+        )
+    }
 }
 
 final class DockIconVisibilityTests: XCTestCase {
@@ -435,6 +489,78 @@ final class MenuBarIconStateTests: XCTestCase {
                 recorderState: .idle
             )
         )
+    }
+}
+
+final class IndicatorPresentationStateTests: XCTestCase {
+    func testRecorderRecordingShowsRecordingPresentationWhenDictationIsIdle() {
+        let presentation = IndicatorPresentationState.resolve(
+            dictationState: .idle,
+            recorderState: .recording
+        )
+
+        XCTAssertEqual(presentation.source, .recorder)
+        XCTAssertEqual(presentation.state, .recording)
+        XCTAssertTrue(presentation.isActiveDuringActivity)
+    }
+
+    func testRecorderFinalizingDoesNotShowRecorderActivity() {
+        let presentation = IndicatorPresentationState.resolve(
+            dictationState: .idle,
+            recorderState: .finalizing
+        )
+
+        XCTAssertEqual(presentation.source, .dictation)
+        XCTAssertEqual(presentation.state, .idle)
+        XCTAssertFalse(presentation.isActiveDuringActivity)
+    }
+
+    func testDictationActiveStatesWinOverRecorderRecording() {
+        let activeDictationStates: [DictationViewModel.State] = [
+            .recording,
+            .processing,
+            .inserting,
+            .error("failed")
+        ]
+
+        for state in activeDictationStates {
+            let presentation = IndicatorPresentationState.resolve(
+                dictationState: state,
+                recorderState: .recording
+            )
+
+            XCTAssertEqual(presentation.source, .dictation)
+            XCTAssertEqual(presentation.state, state)
+            XCTAssertTrue(presentation.isActiveDuringActivity)
+        }
+    }
+
+    func testVisibilityPolicyPreservesAlwaysDuringActivityAndNever() {
+        let recorderPresentation = IndicatorPresentationState.resolve(
+            dictationState: .idle,
+            recorderState: .recording
+        )
+        let idlePresentation = IndicatorPresentationState.resolve(
+            dictationState: .idle,
+            recorderState: .idle
+        )
+
+        XCTAssertTrue(IndicatorPresentationState.shouldShow(
+            visibility: .always,
+            presentation: idlePresentation
+        ))
+        XCTAssertTrue(IndicatorPresentationState.shouldShow(
+            visibility: .duringActivity,
+            presentation: recorderPresentation
+        ))
+        XCTAssertFalse(IndicatorPresentationState.shouldShow(
+            visibility: .duringActivity,
+            presentation: idlePresentation
+        ))
+        XCTAssertFalse(IndicatorPresentationState.shouldShow(
+            visibility: .never,
+            presentation: recorderPresentation
+        ))
     }
 }
 

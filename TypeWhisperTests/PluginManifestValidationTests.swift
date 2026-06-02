@@ -36,6 +36,39 @@ final class PluginManifestValidationTests: XCTestCase {
         }
     }
 
+    func testOptionalPluginManifestLinksUseAbsoluteHTTPURLs() throws {
+        let manifestURLs = try FileManager.default.contentsOfDirectory(
+            at: TestSupport.repoRoot.appendingPathComponent("TypeWhisperPluginSDK/Plugins"),
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        )
+        .map { $0.appendingPathComponent("manifest.json") }
+        .filter { FileManager.default.fileExists(atPath: $0.path) }
+
+        XCTAssertFalse(manifestURLs.isEmpty)
+
+        for manifestURL in manifestURLs {
+            let data = try Data(contentsOf: manifestURL)
+            let manifest = try JSONDecoder().decode(PluginManifest.self, from: data)
+
+            for urlString in [manifest.detailsURL, manifest.homepageURL].compactMap({ $0 }) {
+                let components = URLComponents(string: urlString)
+                let scheme = components?.scheme?.lowercased()
+                XCTAssertTrue(
+                    scheme == "https" || scheme == "http",
+                    "\(manifestURL.lastPathComponent): \(urlString)"
+                )
+                XCTAssertNotNil(components?.host, "\(manifestURL.lastPathComponent): \(urlString)")
+            }
+
+            for urlString in [manifest.iconURL, manifest.iconDarkURL].compactMap({ $0 }) {
+                let components = URLComponents(string: urlString)
+                XCTAssertEqual(components?.scheme?.lowercased(), "https", "\(manifestURL.lastPathComponent): \(urlString)")
+                XCTAssertNotNil(components?.host, "\(manifestURL.lastPathComponent): \(urlString)")
+            }
+        }
+    }
+
     func testAppleSiliconOnlyPluginsDeclareArm64Compatibility() throws {
         let manifestPaths = [
             "TypeWhisperPluginSDK/Plugins/WhisperKitPlugin/manifest.json",
@@ -897,6 +930,184 @@ final class PluginDictionaryGuardTests: XCTestCase {
     }
 }
 
+final class ModelManagerActiveModelNameTests: XCTestCase {
+    @MainActor
+    func testActiveModelNameUsesCatalogDisplayNameForPersistedSelection() {
+        let plugin = CatalogBackedTranscriptionPlugin(
+            providerDisplayName: "Apple Speech",
+            isConfigured: false,
+            transcriptionModels: [],
+            availableModels: [
+                PluginModelInfo(id: "speechanalyzer-de_DE", displayName: "German (Germany)")
+            ],
+            selectedModelId: "speechanalyzer-de_DE"
+        )
+
+        XCTAssertEqual(ModelManagerService.activeModelName(for: plugin), "German (Germany)")
+    }
+
+    @MainActor
+    func testActiveModelNameFallsBackToProviderNameForConfiguredModelessEngine() {
+        let plugin = CatalogBackedTranscriptionPlugin(
+            providerDisplayName: "Modeless Engine",
+            isConfigured: true,
+            transcriptionModels: [],
+            availableModels: [],
+            selectedModelId: nil
+        )
+
+        XCTAssertEqual(ModelManagerService.activeModelName(for: plugin), "Modeless Engine")
+    }
+
+    @MainActor
+    func testActiveModelNameFallsBackToProviderNameForSelectedModelWithoutCatalog() {
+        let plugin = CatalogBackedTranscriptionPlugin(
+            providerDisplayName: "Apple Speech",
+            isConfigured: false,
+            transcriptionModels: [],
+            availableModels: [],
+            selectedModelId: "speechanalyzer-de_DE"
+        )
+
+        XCTAssertEqual(ModelManagerService.activeModelName(for: plugin), "Apple Speech")
+    }
+
+    @MainActor
+    func testActiveModelNameIsNilForUnconfiguredEngineWithoutSelection() {
+        let plugin = CatalogBackedTranscriptionPlugin(
+            providerDisplayName: "Unconfigured Engine",
+            isConfigured: false,
+            transcriptionModels: [],
+            availableModels: [],
+            selectedModelId: nil
+        )
+
+        XCTAssertNil(ModelManagerService.activeModelName(for: plugin))
+    }
+}
+
+@available(macOS 26, *)
+final class SpeechAnalyzerSelectionPersistenceTests: XCTestCase {
+    func testSelectedModelIdUsesPersistedLoadedModelWhenRuntimeModelIsUnloaded() {
+        let host = TestHostServices(userDefaults: ["loadedModel": "speechanalyzer-de_DE"])
+
+        XCTAssertEqual(
+            SpeechAnalyzerPlugin.selectedModelId(loadedModelId: nil, host: host),
+            "speechanalyzer-de_DE"
+        )
+    }
+
+    func testSelectedModelIdPrefersRuntimeModelOverPersistedLoadedModel() {
+        let host = TestHostServices(userDefaults: ["loadedModel": "speechanalyzer-de_DE"])
+
+        XCTAssertEqual(
+            SpeechAnalyzerPlugin.selectedModelId(loadedModelId: "speechanalyzer-en_US", host: host),
+            "speechanalyzer-en_US"
+        )
+    }
+}
+
+private final class CatalogBackedTranscriptionPlugin: NSObject, TranscriptionModelCatalogProviding, @unchecked Sendable {
+    static let pluginId = "test.catalog-backed-transcription-plugin"
+    static let pluginName = "Catalog Backed Transcription Plugin"
+
+    let providerId: String
+    let providerDisplayName: String
+    let isConfigured: Bool
+    let transcriptionModels: [PluginModelInfo]
+    let availableModels: [PluginModelInfo]
+    let selectedModelId: String?
+    let supportsTranslation = false
+    let supportsStreaming = false
+    let supportedLanguages: [String] = []
+
+    required override init() {
+        self.providerId = Self.pluginId
+        self.providerDisplayName = Self.pluginName
+        self.isConfigured = false
+        self.transcriptionModels = []
+        self.availableModels = []
+        self.selectedModelId = nil
+        super.init()
+    }
+
+    init(
+        providerId: String = "catalogBacked",
+        providerDisplayName: String,
+        isConfigured: Bool,
+        transcriptionModels: [PluginModelInfo],
+        availableModels: [PluginModelInfo],
+        selectedModelId: String?
+    ) {
+        self.providerId = providerId
+        self.providerDisplayName = providerDisplayName
+        self.isConfigured = isConfigured
+        self.transcriptionModels = transcriptionModels
+        self.availableModels = availableModels
+        self.selectedModelId = selectedModelId
+        super.init()
+    }
+
+    func activate(host: HostServices) {}
+    func deactivate() {}
+    func selectModel(_ modelId: String) {}
+
+    func transcribe(
+        audio: AudioData,
+        language: String?,
+        translate: Bool,
+        prompt: String?
+    ) async throws -> PluginTranscriptionResult {
+        throw PluginTranscriptionError.notConfigured
+    }
+
+    func transcribe(
+        audio: AudioData,
+        language: String?,
+        translate: Bool,
+        prompt: String?,
+        onProgress: @Sendable @escaping (String) -> Bool
+    ) async throws -> PluginTranscriptionResult {
+        throw PluginTranscriptionError.notConfigured
+    }
+}
+
+private final class TestHostServices: HostServices, @unchecked Sendable {
+    private var userDefaults: [String: Any]
+
+    let pluginDataDirectory: URL
+    let eventBus: EventBusProtocol = TestEventBus()
+    let activeAppBundleId: String? = nil
+    let activeAppName: String? = nil
+    let availableRuleNames: [String] = []
+    let availableWorkflows: [PluginWorkflowInfo] = []
+
+    init(userDefaults: [String: Any] = [:]) {
+        self.userDefaults = userDefaults
+        self.pluginDataDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TypeWhisperTests-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    func storeSecret(key: String, value: String) throws {}
+    func loadSecret(key: String) -> String? { nil }
+    func userDefault(forKey key: String) -> Any? { userDefaults[key] }
+
+    func setUserDefault(_ value: Any?, forKey key: String) {
+        userDefaults[key] = value
+    }
+
+    func notifyCapabilitiesChanged() {}
+    func setStreamingDisplayActive(_ active: Bool) {}
+}
+
+private final class TestEventBus: EventBusProtocol, @unchecked Sendable {
+    func subscribe(handler: @escaping @Sendable (TypeWhisperEvent) async -> Void) -> UUID {
+        UUID()
+    }
+
+    func unsubscribe(id: UUID) {}
+}
+
 final class WhisperKitSettingsStateTests: XCTestCase {
     func testApplyingNotLoadedStateClearsStaleLoadingAndStopsPolling() {
         let initial = WhisperKitSettingsPollState(
@@ -1495,6 +1706,259 @@ final class PluginRegistryDestinationTests: XCTestCase {
         )
 
         XCTAssertEqual(destination, pluginsDirectory.appendingPathComponent("ParakeetPlugin.bundle"))
+    }
+
+    func testRepairEligibilityRequiresActionableExternalBundleNotice() {
+        let registryPlugin = makeRegistryPlugin(id: "com.typewhisper.qwen3")
+        let boundaryNotice = ExternalBundleNotice.boundaryUpgradeRequired(
+            installedVersion: "1.1.0",
+            availableVersion: "1.1.1"
+        )
+
+        XCTAssertTrue(
+            PluginRegistryService.canRepairInstalledPlugin(
+                isBundled: false,
+                registryPlugin: registryPlugin,
+                installInfo: .installed(version: "1.1.1"),
+                installState: nil,
+                externalNotice: boundaryNotice
+            )
+        )
+        XCTAssertFalse(
+            PluginRegistryService.canRepairInstalledPlugin(
+                isBundled: false,
+                registryPlugin: registryPlugin,
+                installInfo: .installed(version: "1.1.1"),
+                installState: nil,
+                externalNotice: nil
+            )
+        )
+        XCTAssertFalse(
+            PluginRegistryService.canRepairInstalledPlugin(
+                isBundled: false,
+                registryPlugin: registryPlugin,
+                installInfo: .installed(version: "1.1.1"),
+                installState: nil,
+                externalNotice: .legacyBundlePresent(version: "1.1.0")
+            )
+        )
+        XCTAssertFalse(
+            PluginRegistryService.canRepairInstalledPlugin(
+                isBundled: true,
+                registryPlugin: registryPlugin,
+                installInfo: .installed(version: "1.1.1"),
+                installState: nil,
+                externalNotice: boundaryNotice
+            )
+        )
+        XCTAssertFalse(
+            PluginRegistryService.canRepairInstalledPlugin(
+                isBundled: false,
+                registryPlugin: nil,
+                installInfo: .installed(version: "1.1.1"),
+                installState: nil,
+                externalNotice: boundaryNotice
+            )
+        )
+        XCTAssertFalse(
+            PluginRegistryService.canRepairInstalledPlugin(
+                isBundled: false,
+                registryPlugin: registryPlugin,
+                installInfo: .updateAvailable(installed: "1.1.0", available: "1.1.1"),
+                installState: nil,
+                externalNotice: boundaryNotice
+            )
+        )
+        XCTAssertFalse(
+            PluginRegistryService.canRepairInstalledPlugin(
+                isBundled: false,
+                registryPlugin: registryPlugin,
+                installInfo: .installed(version: "1.1.1"),
+                installState: .extracting,
+                externalNotice: boundaryNotice
+            )
+        )
+    }
+
+    func testRepairInstallKeepsManagedBundlePathAndPluginDataDirectory() throws {
+        let appSupportDirectory = try TestSupport.makeTemporaryDirectory(prefix: "PluginRepairDestination")
+        defer { TestSupport.remove(appSupportDirectory) }
+
+        let pluginsDirectory = appSupportDirectory.appendingPathComponent("Plugins", isDirectory: true)
+        let pluginDataDirectory = appSupportDirectory
+            .appendingPathComponent("PluginData", isDirectory: true)
+            .appendingPathComponent("com.typewhisper.qwen3", isDirectory: true)
+        try FileManager.default.createDirectory(at: pluginsDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pluginDataDirectory, withIntermediateDirectories: true)
+        let sentinelURL = pluginDataDirectory.appendingPathComponent("model-cache-sentinel")
+        try Data("keep model cache".utf8).write(to: sentinelURL)
+
+        let existingURL = pluginsDirectory.appendingPathComponent("Qwen3Plugin.bundle", isDirectory: true)
+        let destination = PluginRegistryService.resolveInstallDestinationURL(
+            currentURL: existingURL,
+            builtInPluginsURL: nil,
+            pluginsDirectory: pluginsDirectory,
+            incomingBundleName: "Qwen3Plugin.bundle"
+        )
+
+        XCTAssertEqual(destination, existingURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sentinelURL.path))
+    }
+
+    private func makeRegistryPlugin(id: String) -> RegistryPlugin {
+        RegistryPlugin(
+            id: id,
+            source: .official,
+            name: "Qwen3 ASR",
+            version: "1.1.1",
+            minHostVersion: "1.4.0",
+            sdkCompatibilityVersion: PluginSDKCompatibility.currentVersion,
+            minOSVersion: "14.0",
+            supportedArchitectures: ["arm64"],
+            author: "TypeWhisper",
+            description: "Local model plugin",
+            category: "transcription",
+            categories: ["transcription"],
+            size: 1,
+            downloadURL: "https://example.com/Qwen3Plugin.zip",
+            iconSystemName: "cpu",
+            requiresAPIKey: false,
+            hosting: .local,
+            descriptions: nil,
+            downloadCount: nil
+        )
+    }
+}
+
+final class PluginDiagnosticsSupportTests: XCTestCase {
+    func testPluginSourceClassifiesBundledManagedAndExternalPaths() async throws {
+        let root = try TestSupport.makeTemporaryDirectory(prefix: "PluginDiagnostics")
+        defer { TestSupport.remove(root) }
+
+        let builtInPluginsURL = root.appendingPathComponent("TypeWhisper.app/Contents/PlugIns", isDirectory: true)
+        let pluginsDirectory = root.appendingPathComponent("Application Support/TypeWhisper/Plugins", isDirectory: true)
+        let externalDirectory = root.appendingPathComponent("External", isDirectory: true)
+
+        let bundledURL = try makeMockBundle(in: builtInPluginsURL, name: "BundledPlugin")
+        let managedURL = try makeMockBundle(in: pluginsDirectory, name: "ManagedPlugin")
+        let externalURL = try makeMockBundle(in: externalDirectory, name: "ExternalPlugin")
+
+        let bundled = await PluginDiagnosticsSupport.sourceInfo(
+            bundle: try XCTUnwrap(Bundle(url: bundledURL)),
+            sourceURL: bundledURL,
+            builtInPluginsURL: builtInPluginsURL,
+            pluginsDirectory: pluginsDirectory,
+            homeDirectory: root
+        )
+        let managed = await PluginDiagnosticsSupport.sourceInfo(
+            bundle: try XCTUnwrap(Bundle(url: managedURL)),
+            sourceURL: managedURL,
+            builtInPluginsURL: builtInPluginsURL,
+            pluginsDirectory: pluginsDirectory,
+            homeDirectory: root
+        )
+        let external = await PluginDiagnosticsSupport.sourceInfo(
+            bundle: try XCTUnwrap(Bundle(url: externalURL)),
+            sourceURL: externalURL,
+            builtInPluginsURL: builtInPluginsURL,
+            pluginsDirectory: pluginsDirectory,
+            homeDirectory: root
+        )
+
+        XCTAssertEqual(bundled.sourceKind, .bundled)
+        XCTAssertEqual(managed.sourceKind, .managedExternal)
+        XCTAssertEqual(external.sourceKind, .externalOther)
+        XCTAssertTrue(managed.pathHint.hasPrefix("~/"))
+        XCTAssertFalse(managed.pathHint.contains(root.path))
+    }
+
+    func testPluginSourcePathHintCanonicalizesSymlinkedBundles() async throws {
+        let root = try TestSupport.makeTemporaryDirectory(prefix: "PluginDiagnosticsSymlink")
+        defer { TestSupport.remove(root) }
+
+        let realHome = root.appendingPathComponent("real-home", isDirectory: true)
+        let symlinkHome = root.appendingPathComponent("symlink-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: realHome, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: symlinkHome, withDestinationURL: realHome)
+
+        let pluginsDirectory = realHome.appendingPathComponent("Application Support/TypeWhisper/Plugins", isDirectory: true)
+        let bundleURL = try makeMockBundle(in: pluginsDirectory, name: "SymlinkPlugin")
+        let symlinkedBundleURL = symlinkHome
+            .appendingPathComponent("Application Support/TypeWhisper/Plugins", isDirectory: true)
+            .appendingPathComponent(bundleURL.lastPathComponent, isDirectory: true)
+
+        let source = await PluginDiagnosticsSupport.sourceInfo(
+            bundle: try XCTUnwrap(Bundle(url: symlinkedBundleURL)),
+            sourceURL: symlinkedBundleURL,
+            builtInPluginsURL: nil,
+            pluginsDirectory: pluginsDirectory,
+            homeDirectory: realHome
+        )
+
+        XCTAssertEqual(source.sourceKind, .managedExternal)
+        XCTAssertTrue(source.pathHint.hasPrefix("~/"))
+        XCTAssertFalse(source.pathHint.contains(symlinkHome.path))
+    }
+
+    func testPluginSourceReportsExecutableSizeAndHash() async throws {
+        let root = try TestSupport.makeTemporaryDirectory(prefix: "PluginDiagnosticsHash")
+        defer { TestSupport.remove(root) }
+
+        let pluginsDirectory = root.appendingPathComponent("Plugins", isDirectory: true)
+        let bundleURL = try makeMockBundle(
+            in: pluginsDirectory,
+            name: "HashPlugin",
+            executableData: Data("hash me".utf8)
+        )
+
+        let source = await PluginDiagnosticsSupport.sourceInfo(
+            bundle: try XCTUnwrap(Bundle(url: bundleURL)),
+            sourceURL: bundleURL,
+            builtInPluginsURL: nil,
+            pluginsDirectory: pluginsDirectory,
+            homeDirectory: root
+        )
+
+        XCTAssertEqual(source.executableSizeBytes, 7)
+        XCTAssertEqual(source.executableSHA256?.count, 64)
+        XCTAssertEqual(source.bundleIdentifier, "com.typewhisper.tests.HashPlugin")
+        XCTAssertEqual(source.bundleShortVersion, "1.0.0")
+        XCTAssertEqual(source.bundleVersion, "1")
+    }
+
+    private func makeMockBundle(
+        in parentDirectory: URL,
+        name: String,
+        executableData: Data = Data("mock executable".utf8)
+    ) throws -> URL {
+        let bundleURL = parentDirectory.appendingPathComponent("\(name).bundle", isDirectory: true)
+        let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
+        let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: macOSURL, withIntermediateDirectories: true)
+
+        let infoPlist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleExecutable</key>
+            <string>\(name)</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.typewhisper.tests.\(name)</string>
+            <key>CFBundleName</key>
+            <string>\(name)</string>
+            <key>CFBundlePackageType</key>
+            <string>BNDL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+        </dict>
+        </plist>
+        """
+        try Data(infoPlist.utf8).write(to: contentsURL.appendingPathComponent("Info.plist"))
+        try executableData.write(to: macOSURL.appendingPathComponent(name))
+        return bundleURL
     }
 }
 

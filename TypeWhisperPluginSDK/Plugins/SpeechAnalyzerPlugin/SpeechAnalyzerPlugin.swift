@@ -31,6 +31,7 @@ final class SpeechAnalyzerPlugin: NSObject, LiveTranscriptionCapablePlugin, Tran
         self.host = host
         Task {
             await populateModels()
+            host.notifyCapabilitiesChanged()
             await restoreLoadedModel(allowDownloads: false)
         }
     }
@@ -55,10 +56,18 @@ final class SpeechAnalyzerPlugin: NSObject, LiveTranscriptionCapablePlugin, Tran
     }
 
     var transcriptionModels: [PluginModelInfo] {
-        guard let loadedModelId else { return [] }
+        guard let selectedModelId else { return [] }
         return cachedModels
-            .filter { $0.id == loadedModelId }
-            .map { PluginModelInfo(id: $0.id, displayName: $0.displayName, sizeDescription: "System-managed", languageCount: 1) }
+            .filter { $0.id == selectedModelId }
+            .map {
+                PluginModelInfo(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    sizeDescription: "System-managed",
+                    languageCount: 1,
+                    loaded: $0.id == loadedModelId
+                )
+            }
     }
 
     var availableModels: [PluginModelInfo] {
@@ -73,12 +82,26 @@ final class SpeechAnalyzerPlugin: NSObject, LiveTranscriptionCapablePlugin, Tran
         }
     }
 
-    var selectedModelId: String? { loadedModelId }
+    var selectedModelId: String? {
+        Self.selectedModelId(loadedModelId: loadedModelId, host: host)
+    }
+
+    static func selectedModelId(loadedModelId: String?, host: HostServices?) -> String? {
+        loadedModelId ?? (host?.userDefault(forKey: "loadedModel") as? String)
+    }
 
     func selectModel(_ modelId: String) {
         // Selecting a different model requires unloading and reloading
-        if modelId != loadedModelId, let modelDef = cachedModels.first(where: { $0.id == modelId }) {
-            Task { await loadModel(modelDef) }
+        if modelId != loadedModelId {
+            Task {
+                if cachedModels.isEmpty {
+                    await populateModels()
+                    host?.notifyCapabilitiesChanged()
+                }
+                if let modelDef = cachedModels.first(where: { $0.id == modelId }) {
+                    await loadModel(modelDef)
+                }
+            }
         }
     }
 
@@ -280,6 +303,11 @@ final class SpeechAnalyzerPlugin: NSObject, LiveTranscriptionCapablePlugin, Tran
 
     @objc func triggerAutoUnload() { unloadModel(clearPersistence: false) }
     @objc func triggerRestoreModel() { Task { await restoreLoadedModel(allowDownloads: true) } }
+    @objc(triggerRestoreModelForLanguage:)
+    func triggerRestoreModel(forLanguage languageCode: NSString?) {
+        let requestedLanguage = languageCode as String?
+        Task { await prepareModelForTranscription(languageCode: requestedLanguage) }
+    }
 
     func unloadModel(clearPersistence: Bool = true) {
         if let locale = currentLocale {
@@ -298,6 +326,7 @@ final class SpeechAnalyzerPlugin: NSObject, LiveTranscriptionCapablePlugin, Tran
     func restoreLoadedModel(allowDownloads: Bool = true) async {
         if cachedModels.isEmpty {
             await populateModels()
+            host?.notifyCapabilitiesChanged()
         }
 
         guard let savedId = host?.userDefault(forKey: "loadedModel") as? String,
@@ -309,6 +338,62 @@ final class SpeechAnalyzerPlugin: NSObject, LiveTranscriptionCapablePlugin, Tran
             guard hasInstalledAssets else { return }
         }
         await loadModel(modelDef)
+    }
+
+    func prepareModelForTranscription(languageCode: String?) async {
+        if cachedModels.isEmpty {
+            await populateModels()
+            host?.notifyCapabilitiesChanged()
+        }
+
+        let trimmedLanguage = languageCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedLanguage = trimmedLanguage?.isEmpty == false ? trimmedLanguage : nil
+
+        if let normalizedLanguage,
+           let modelDef = preferredModel(forLanguageCode: normalizedLanguage) {
+            if loadedModelId != modelDef.id {
+                await loadModel(modelDef)
+            }
+            return
+        }
+
+        if isConfigured {
+            return
+        }
+
+        if normalizedLanguage == nil,
+           let savedId = host?.userDefault(forKey: "loadedModel") as? String,
+           let modelDef = cachedModels.first(where: { $0.id == savedId }) {
+            await loadModel(modelDef)
+            return
+        }
+
+        guard normalizedLanguage == nil,
+              let modelDef = preferredSystemLocaleModel() else {
+            return
+        }
+        await loadModel(modelDef)
+    }
+
+    private func preferredModel(forLanguageCode languageCode: String) -> SpeechModelDef? {
+        guard let modelId = AppleSpeechModelSelection.preferredModelId(
+            fromModelIds: cachedModels.map(\.id),
+            localeIdentifier: languageCode,
+            languageCode: languageCode,
+            fallbackToFirst: false
+        ) else {
+            return nil
+        }
+        return cachedModels.first { $0.id == modelId }
+    }
+
+    private func preferredSystemLocaleModel() -> SpeechModelDef? {
+        guard let modelId = AppleSpeechModelSelection.preferredModelId(
+            fromModelIds: cachedModels.map(\.id)
+        ) else {
+            return nil
+        }
+        return cachedModels.first { $0.id == modelId }
     }
 
     private func hasInstalledAssets(for modelDef: SpeechModelDef) async -> Bool {
