@@ -185,6 +185,16 @@ class NotchIndicatorPanel: NSPanel {
         }
     }
 
+    private func suppressForForeignFullscreen() {
+        cachedScreen = nil
+        showTask?.cancel()
+        showTask = nil
+        dismissTask?.cancel()
+        dismissTask = nil
+        notchGeometry.isPresented = false
+        orderOut(nil)
+    }
+
     private func resolveScreen() -> NSScreen {
         screenResolver.resolveScreen(for: DictationViewModel.shared.notchIndicatorDisplay)
     }

@@ -573,7 +573,7 @@ final class TextInsertionService {
             pasteboard.clearContents()
             pasteboard.setString(processedText, forType: .string)
             simulatePaste()
-            return .pasted
+            return .pasted(verification: .unverified(.focusedTextStateUnavailable))
         }
 
         let hadFocusedTextField = autoEnter && hasFocusedTextField()
@@ -586,7 +586,7 @@ final class TextInsertionService {
                 try? await Task.sleep(for: .milliseconds(50))
                 simulateReturn()
             }
-            return .pasted
+            return .insertedViaAccessibility
         }
 
         // Step 2: Clipboard paste with verification
@@ -609,7 +609,7 @@ final class TextInsertionService {
                 try? await Task.sleep(for: .milliseconds(50))
                 simulateReturn()
             }
-            return .pasted
+            return .pasted(verification: .verified)
         }
 
         // Step 3: Retry paste once (only if AX is still available for verification)
@@ -619,7 +619,7 @@ final class TextInsertionService {
                 try? await Task.sleep(for: .milliseconds(50))
                 simulateReturn()
             }
-            return .pasted
+            return .pasted(verification: .unverified(.focusedTextStateUnavailable))
         }
 
         try? await Task.sleep(for: .milliseconds(75))
@@ -640,7 +640,7 @@ final class TextInsertionService {
             simulateReturn()
         }
 
-        return .pasted
+        return .pasted(verification: .unverified(.focusedTextUnchanged))
     }
 
     func focusedElementPosition() -> CGPoint? {

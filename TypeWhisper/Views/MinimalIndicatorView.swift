@@ -182,7 +182,6 @@ struct MinimalIndicatorView: View {
     }
 
     @ViewBuilder
-    @ViewBuilder
     private var compactStatus: some View {
         if compactModeEnabled {
             switch presentation.state {

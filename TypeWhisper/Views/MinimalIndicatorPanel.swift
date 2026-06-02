@@ -140,6 +140,11 @@ class MinimalIndicatorPanel: NSPanel {
         )
     }
 
+    private func suppressForForeignFullscreen() {
+        cachedScreen = nil
+        orderOut(nil)
+    }
+
     private func resolveScreen() -> NSScreen {
         screenResolver.resolveScreen(for: DictationViewModel.shared.notchIndicatorDisplay)
     }
