@@ -1103,7 +1103,6 @@ final class DictationViewModel: ObservableObject {
             } else {
                 pendingRecordingAudioDuckingLevel = nil
             }
-            state = .recording
             hotkeyService.activatePriorityEscCapture()
             // Reset hotkey timer so hybrid threshold counts from recording start,
             // not from key press. Slow device init (e.g. iPhone Continuity ~2-3s)
@@ -1139,6 +1138,10 @@ final class DictationViewModel: ObservableObject {
             }
             startContextCaptureSession()
             applyEffectiveMicrophoneBoostToAudioService()
+            // Set recording state after context and workflow are resolved so the
+            // waveform's first render already has hasContext = true, avoiding the
+            // white→blue animation flash.
+            state = .recording
             updateRecordingStartCuePayload(activeApp: activeApp)
             let contextMs = (CFAbsoluteTimeGetCurrent() - contextStartTimestamp) * 1000
 

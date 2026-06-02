@@ -306,7 +306,9 @@ struct NotchIndicatorView: View {
                 presentation: presentation,
                 content: viewModel.notchIndicatorLeftContent,
                 sizing: sizing,
-                dotPulse: dotPulse
+                dotPulse: dotPulse,
+                hasContext: viewModel.hasActiveWorkflow && viewModel.hasAttachedContext,
+                stateForIsProcessing: viewModel.state
             )
         }
     }
@@ -318,7 +320,9 @@ struct NotchIndicatorView: View {
                 presentation: presentation,
                 content: viewModel.notchIndicatorRightContent,
                 sizing: sizing,
-                dotPulse: dotPulse
+                dotPulse: dotPulse,
+                hasContext: viewModel.hasActiveWorkflow && viewModel.hasAttachedContext,
+                stateForIsProcessing: viewModel.state
             )
         } else if case .processing = presentation.state {
             ProgressView()
