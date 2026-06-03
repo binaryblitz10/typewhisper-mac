@@ -163,7 +163,7 @@ struct TypeWhisperApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra(isInserted: $showMenuBarIcon) {
+        MenuBarExtra(isInserted: Binding(get: { showMenuBarIcon }, set: { _ in })) {
             menuBarContent
         } label: {
             if AppConstants.isRunningTests {
